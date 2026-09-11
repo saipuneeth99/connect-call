@@ -20,8 +20,8 @@ class CallRepository {
         type: type,
       );
 
-  Future<void> acceptCall(String callId) =>
-      _callingService.acceptCall(callId);
+  Future<void> acceptCall(String callId, [CallType? type]) =>
+      _callingService.acceptCall(callId, type);
 
   Future<void> rejectCall(String callId) =>
       _callingService.rejectCall(callId);

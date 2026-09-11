@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/utils/date_utils.dart';
+import '../../../data/models/app_user.dart';
+import '../../../data/models/call_status.dart';
 import '../../../app/routes/app_routes.dart';
 import '../../../widgets/app_avatar.dart';
 import '../../../widgets/call_tile.dart';
@@ -9,6 +11,7 @@ import '../../../widgets/empty_view.dart';
 import '../../../widgets/error_view.dart';
 import '../../../widgets/loading_view.dart';
 import '../controllers/home_controller.dart';
+import '../controllers/main_navigation_controller.dart';
 
 class HomeView extends GetView<HomeController> {
   const HomeView({super.key});
@@ -56,6 +59,8 @@ class HomeView extends GetView<HomeController> {
                             const SizedBox(height: 2),
                             Obx(() => Text(
                                   controller.currentUser.value.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                   style: theme.textTheme.headlineSmall
                                       ?.copyWith(
                                     fontWeight: FontWeight.w700,
@@ -77,12 +82,18 @@ class HomeView extends GetView<HomeController> {
 
                 const SizedBox(height: AppSpacing.xxl),
 
-                // Search
+                // Search Bar (Opens Contacts)
                 Padding(
                   padding:
                       const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
                   child: GestureDetector(
-                    onTap: () => Get.toNamed(AppRoutes.contacts),
+                    onTap: () {
+                      if (Get.isRegistered<MainNavigationController>()) {
+                        Get.find<MainNavigationController>().changePage(1);
+                      } else {
+                        Get.toNamed(AppRoutes.contacts);
+                      }
+                    },
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: AppSpacing.lg,
@@ -90,18 +101,21 @@ class HomeView extends GetView<HomeController> {
                       ),
                       decoration: BoxDecoration(
                         color: theme.inputDecorationTheme.fillColor,
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: theme.colorScheme.outline.withValues(alpha: 0.15),
+                        ),
                       ),
                       child: Row(
                         children: [
                           Icon(
-                            Icons.search,
+                            Icons.search_rounded,
                             color: theme.colorScheme.onSurface
                                 .withValues(alpha: 0.4),
                           ),
                           const SizedBox(width: AppSpacing.md),
                           Text(
-                            'Search people...',
+                            'Search contacts to call...',
                             style: theme.textTheme.bodyLarge?.copyWith(
                               color: theme.colorScheme.onSurface
                                   .withValues(alpha: 0.4),
@@ -115,7 +129,7 @@ class HomeView extends GetView<HomeController> {
 
                 const SizedBox(height: AppSpacing.xxxl),
 
-                // Favorites
+                // Favorites with interactive Quick Call sheet
                 Obx(() {
                   if (controller.favorites.isEmpty) {
                     return const SizedBox.shrink();
@@ -136,38 +150,43 @@ class HomeView extends GetView<HomeController> {
                       ),
                       const SizedBox(height: AppSpacing.lg),
                       SizedBox(
-                        height: 96,
+                        height: 106,
                         child: ListView.separated(
                           scrollDirection: Axis.horizontal,
                           padding: const EdgeInsets.symmetric(
                               horizontal: AppSpacing.xl),
                           itemCount: controller.favorites.length,
                           separatorBuilder: (_, _) =>
-                              const SizedBox(width: AppSpacing.lg),
+                              const SizedBox(width: AppSpacing.md),
                           itemBuilder: (context, index) {
                             final user = controller.favorites[index];
-                            return GestureDetector(
-                              onTap: () => Get.toNamed(
-                                AppRoutes.contacts,
-                                arguments: {'userId': user.id},
-                              ),
-                              child: Column(
-                                children: [
-                                  AppAvatar(
-                                    name: user.name,
-                                    imageUrl: user.avatarUrl,
-                                    size: AvatarSize.large,
-                                    showOnlineStatus: true,
-                                    isOnline: user.isOnline,
-                                  ),
-                                  const SizedBox(height: AppSpacing.sm),
-                                  Text(
-                                    user.name.split(' ').first,
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      fontWeight: FontWeight.w500,
+                            return SizedBox(
+                              width: 68,
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(14),
+                                onTap: () => _showQuickCallSheet(context, user),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    AppAvatar(
+                                      name: user.name,
+                                      imageUrl: user.avatarUrl,
+                                      size: AvatarSize.large,
+                                      showOnlineStatus: true,
+                                      isOnline: user.isOnline,
                                     ),
-                                  ),
-                                ],
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      user.name.split(' ').first,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.center,
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             );
                           },
@@ -193,7 +212,11 @@ class HomeView extends GetView<HomeController> {
                         ),
                       ),
                       TextButton(
-                        onPressed: () {},
+                        onPressed: () {
+                          if (Get.isRegistered<MainNavigationController>()) {
+                            Get.find<MainNavigationController>().changePage(2);
+                          }
+                        },
                         child: const Text('Show all'),
                       ),
                     ],
@@ -220,6 +243,17 @@ class HomeView extends GetView<HomeController> {
                           AppRoutes.callDetail,
                           arguments: call,
                         ),
+                        onCallBack: () => _startDirectCall(
+                          call.otherParticipant.id,
+                          call.type,
+                          AppUser(
+                            id: call.otherParticipant.id,
+                            name: call.otherParticipant.name,
+                            avatarUrl: call.otherParticipant.avatarUrl,
+                            email: '',
+                            isOnline: true,
+                          ),
+                        ),
                       );
                     }).toList(),
                   );
@@ -231,6 +265,156 @@ class HomeView extends GetView<HomeController> {
           );
         }),
       ),
+    );
+  }
+
+  void _showQuickCallSheet(BuildContext context, AppUser user) {
+    final theme = Theme.of(context);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) {
+        return Container(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.35),
+                blurRadius: 24,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+          padding: EdgeInsets.fromLTRB(
+            AppSpacing.xxl,
+            AppSpacing.lg,
+            AppSpacing.xxl,
+            MediaQuery.of(context).padding.bottom + AppSpacing.xxl,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Drag Handle
+              Container(
+                width: 44,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.xl),
+
+              // Contact Avatar
+              AppAvatar(
+                name: user.name,
+                imageUrl: user.avatarUrl,
+                size: AvatarSize.extraLarge,
+                showOnlineStatus: true,
+                isOnline: user.isOnline,
+              ),
+              const SizedBox(height: AppSpacing.md),
+
+              // Contact Name & Status
+              Text(
+                user.name,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                user.isOnline ? 'Active now' : user.email,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: user.isOnline
+                      ? const Color(0xFF10B981)
+                      : theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+              ),
+
+              const SizedBox(height: AppSpacing.xxxl),
+
+              // Call Options
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.call_rounded, color: Colors.white),
+                      label: const Text(
+                        'Audio Call',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 15,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                      onPressed: () {
+                        Get.back();
+                        _startDirectCall(user.id, CallType.audio, user);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.videocam_rounded, color: Colors.white),
+                      label: const Text(
+                        'Video Call',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 15,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF3B82F6),
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                      onPressed: () {
+                        Get.back();
+                        _startDirectCall(user.id, CallType.video, user);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.md),
+              TextButton(
+                onPressed: () {
+                  Get.back();
+                  Get.toNamed(AppRoutes.contactDetail, arguments: user);
+                },
+                child: const Text('View Full Contact Details'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _startDirectCall(String userId, CallType type, [AppUser? user]) {
+    Get.toNamed(
+      type == CallType.video ? AppRoutes.videoCall : AppRoutes.audioCall,
+      arguments: {
+        'receiverId': userId,
+        'callType': type,
+        'user': user,
+      },
     );
   }
 }

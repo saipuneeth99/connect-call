@@ -119,7 +119,7 @@ class MockCallingService implements CallingService {
   }
 
   @override
-  Future<void> acceptCall(String callId) async {
+  Future<void> acceptCall(String callId, [CallType? type]) async {
     final controller = _statusControllers[callId];
     if (controller == null || controller.isClosed) return;
 

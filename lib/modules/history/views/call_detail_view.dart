@@ -5,6 +5,7 @@ import '../../../core/utils/date_utils.dart';
 import '../../../core/utils/duration_utils.dart';
 import '../../../data/models/call.dart';
 import '../../../data/models/call_status.dart';
+import '../../../data/models/app_user.dart';
 import '../../../app/routes/app_routes.dart';
 import '../../../widgets/app_avatar.dart';
 import '../../../widgets/app_button.dart';
@@ -113,10 +114,17 @@ class CallDetailView extends StatelessWidget {
                     label: 'Call Again',
                     icon: Icons.call,
                     onPressed: () => Get.toNamed(
-                      AppRoutes.outgoingCall,
+                      AppRoutes.audioCall,
                       arguments: {
                         'receiverId': other.id,
                         'callType': CallType.audio,
+                        'user': AppUser(
+                          id: other.id,
+                          name: other.name,
+                          avatarUrl: other.avatarUrl,
+                          email: '',
+                          isOnline: true,
+                        ),
                       },
                     ),
                   ),
@@ -128,10 +136,17 @@ class CallDetailView extends StatelessWidget {
                     icon: Icons.videocam,
                     variant: AppButtonVariant.outline,
                     onPressed: () => Get.toNamed(
-                      AppRoutes.outgoingCall,
+                      AppRoutes.videoCall,
                       arguments: {
                         'receiverId': other.id,
                         'callType': CallType.video,
+                        'user': AppUser(
+                          id: other.id,
+                          name: other.name,
+                          avatarUrl: other.avatarUrl,
+                          email: '',
+                          isOnline: true,
+                        ),
                       },
                     ),
                   ),

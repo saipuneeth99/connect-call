@@ -2,6 +2,8 @@ import 'package:get/get.dart';
 import '../../../data/repositories/auth_repository.dart';
 import '../../../app/routes/app_routes.dart';
 
+import '../../../data/services/call_signaling_service.dart';
+
 class SplashController extends GetxController {
   final AuthRepository _authRepository;
 
@@ -19,6 +21,7 @@ class SplashController extends GetxController {
     try {
       final user = await _authRepository.getCurrentUser();
       if (user != null) {
+        CallSignalingService.instance.init(user.id);
         Get.offAllNamed(AppRoutes.home);
       } else {
         Get.offAllNamed(AppRoutes.login);

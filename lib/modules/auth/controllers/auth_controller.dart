@@ -5,6 +5,7 @@ import '../../../data/repositories/auth_repository.dart';
 import '../../../app/routes/app_routes.dart';
 
 import '../../../data/repositories/user_repository.dart';
+import '../../../data/services/call_signaling_service.dart';
 
 class AuthController extends GetxController {
   final AuthRepository _authRepository;
@@ -50,6 +51,9 @@ class AuthController extends GetxController {
           await _authRepository.login(email: email, password: password);
       currentUser.value = user;
       await _syncUser(user);
+      if (user != null) {
+        CallSignalingService.instance.init(user.id);
+      }
       Get.offAllNamed(AppRoutes.home);
     } catch (e) {
       errorMessage.value = ErrorHandler.getUserMessage(e);
@@ -74,6 +78,9 @@ class AuthController extends GetxController {
       );
       currentUser.value = user;
       await _syncUser(user);
+      if (user != null) {
+        CallSignalingService.instance.init(user.id);
+      }
       Get.offAllNamed(AppRoutes.home);
     } catch (e) {
       errorMessage.value = ErrorHandler.getUserMessage(e);
@@ -93,6 +100,7 @@ class AuthController extends GetxController {
       if (user != null) {
         currentUser.value = user;
         await _syncUser(user);
+        CallSignalingService.instance.init(user.id);
         Get.offAllNamed(AppRoutes.home);
       }
     } catch (e) {
@@ -104,6 +112,7 @@ class AuthController extends GetxController {
 
   Future<void> logout() async {
     try {
+      CallSignalingService.instance.dispose();
       await _authRepository.logout();
       currentUser.value = null;
       Get.offAllNamed(AppRoutes.login);

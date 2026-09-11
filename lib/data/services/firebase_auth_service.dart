@@ -13,7 +13,11 @@ class FirebaseAuthService implements AuthService {
     FirebaseAuth? auth,
     GoogleSignIn? googleSignIn,
   })  : _auth = auth ?? FirebaseAuth.instance,
-        _googleSignIn = googleSignIn ?? GoogleSignIn();
+        _googleSignIn = googleSignIn ??
+            GoogleSignIn(
+              serverClientId:
+                  '877726576292-036tptn29iea5jv3ou8i4g5mav5k7ojo.apps.googleusercontent.com',
+            );
 
   @override
   Future<AppUser?> login({

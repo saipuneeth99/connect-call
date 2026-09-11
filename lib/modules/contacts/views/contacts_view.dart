@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../data/models/call_status.dart';
+import '../../../data/models/app_user.dart';
 import '../../../app/routes/app_routes.dart';
 import '../../../widgets/empty_view.dart';
 import '../../../widgets/error_view.dart';
@@ -102,8 +103,8 @@ class ContactsView extends GetView<ContactsController> {
                           AppRoutes.contactDetail,
                           arguments: user,
                         ),
-                        onAudioCall: () => _startCall(user.id, CallType.audio),
-                        onVideoCall: () => _startCall(user.id, CallType.video),
+                        onAudioCall: () => _startCall(user, CallType.audio),
+                        onVideoCall: () => _startCall(user, CallType.video),
                       );
                     },
                   ),
@@ -116,10 +117,14 @@ class ContactsView extends GetView<ContactsController> {
     );
   }
 
-  void _startCall(String userId, CallType type) {
+  void _startCall(AppUser user, CallType type) {
     Get.toNamed(
-      AppRoutes.outgoingCall,
-      arguments: {'receiverId': userId, 'callType': type},
+      type == CallType.video ? AppRoutes.videoCall : AppRoutes.audioCall,
+      arguments: {
+        'receiverId': user.id,
+        'callType': type,
+        'user': user,
+      },
     );
   }
 }

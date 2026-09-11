@@ -69,10 +69,11 @@ class ContactDetailView extends StatelessWidget {
                     label: 'Audio Call',
                     icon: Icons.call,
                     onPressed: () => Get.toNamed(
-                      AppRoutes.outgoingCall,
+                      AppRoutes.audioCall,
                       arguments: {
                         'receiverId': user.id,
                         'callType': CallType.audio,
+                        'user': user,
                       },
                     ),
                   ),
@@ -84,10 +85,11 @@ class ContactDetailView extends StatelessWidget {
                     icon: Icons.videocam,
                     variant: AppButtonVariant.outline,
                     onPressed: () => Get.toNamed(
-                      AppRoutes.outgoingCall,
+                      AppRoutes.videoCall,
                       arguments: {
                         'receiverId': user.id,
                         'callType': CallType.video,
+                        'user': user,
                       },
                     ),
                   ),

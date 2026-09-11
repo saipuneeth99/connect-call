@@ -1,4 +1,4 @@
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide StorageException;
 import '../../core/errors/app_exception.dart';
 import 'storage_service.dart';
@@ -17,24 +17,29 @@ class SupabaseStorageService implements StorageService {
     String fileName,
   ) async {
     try {
-      final fileExt = fileName.contains('.') ? fileName.split('.').last : 'jpg';
+      final rawExt = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : 'jpg';
+      final fileExt = (rawExt == 'jpeg' || rawExt == 'jpg') ? 'jpg' : rawExt;
+      final mimeType = (rawExt == 'jpg' || rawExt == 'jpeg') ? 'image/jpeg' : 'image/$rawExt';
       final path = '$userId/avatar.$fileExt';
 
+      debugPrint('SupabaseStorageService: uploading ${bytes.length} bytes to $_bucketName at $path (type $mimeType)');
       await _client.storage.from(_bucketName).uploadBinary(
             path,
             Uint8List.fromList(bytes),
             fileOptions: FileOptions(
               upsert: true,
-              contentType: 'image/$fileExt',
+              contentType: mimeType,
             ),
           );
 
       final publicUrl =
           _client.storage.from(_bucketName).getPublicUrl(path);
 
+      debugPrint('SupabaseStorageService: got publicUrl $publicUrl');
       // Add a cache-busting timestamp
       return '$publicUrl?t=${DateTime.now().millisecondsSinceEpoch}';
-    } catch (e) {
+    } catch (e, s) {
+      debugPrint('SupabaseStorageService error: $e\n$s');
       throw StorageException('Failed to upload avatar: $e');
     }
   }

@@ -4,16 +4,19 @@ import '../core/theme/app_spacing.dart';
 import '../core/utils/date_utils.dart';
 import '../core/utils/duration_utils.dart';
 import '../data/models/call.dart';
+import '../data/models/call_status.dart';
 import 'app_avatar.dart';
 
 class CallTile extends StatelessWidget {
   final Call call;
   final VoidCallback? onTap;
+  final VoidCallback? onCallBack;
 
   const CallTile({
     super.key,
     required this.call,
     this.onTap,
+    this.onCallBack,
   });
 
   @override
@@ -94,6 +97,20 @@ class CallTile extends StatelessWidget {
                 ],
               ],
             ),
+            if (onCallBack != null) ...[
+              const SizedBox(width: AppSpacing.sm),
+              IconButton(
+                icon: Icon(
+                  call.type == CallType.video
+                      ? Icons.videocam_outlined
+                      : Icons.call_outlined,
+                  size: 20,
+                  color: theme.colorScheme.primary,
+                ),
+                onPressed: onCallBack,
+                tooltip: 'Call back',
+              ),
+            ],
           ],
         ),
       ),

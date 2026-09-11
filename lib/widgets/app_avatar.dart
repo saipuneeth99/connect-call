@@ -67,11 +67,14 @@ class AppAvatar extends StatelessWidget {
     final bgColor = backgroundColor ??
         (isDark ? AppColors.surfaceVariantDark : AppColors.surfaceVariantLight);
 
+    final hasValidImage = imageUrl != null && imageUrl!.trim().isNotEmpty;
+
     Widget avatar = CircleAvatar(
       radius: _radius,
       backgroundColor: bgColor,
-      backgroundImage: imageUrl != null ? NetworkImage(imageUrl!) : null,
-      child: imageUrl == null
+      backgroundImage: hasValidImage ? NetworkImage(imageUrl!.trim()) : null,
+      onBackgroundImageError: hasValidImage ? (e, s) {} : null,
+      child: !hasValidImage
           ? Text(
               _initials,
               style: TextStyle(

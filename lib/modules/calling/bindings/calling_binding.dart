@@ -6,9 +6,14 @@ import '../../../data/repositories/user_repository.dart';
 class CallingBinding extends Bindings {
   @override
   void dependencies() {
-    Get.put(CallController(
-      Get.find<CallRepository>(),
-      Get.find<UserRepository>(),
-    ));
+    if (!Get.isRegistered<CallController>()) {
+      Get.put(
+        CallController(
+          Get.find<CallRepository>(),
+          Get.find<UserRepository>(),
+        ),
+        permanent: true,
+      );
+    }
   }
 }

@@ -1,8 +1,10 @@
 import 'package:get/get.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../core/errors/error_handler.dart';
 import '../../../data/models/call.dart';
 import '../../../data/repositories/call_repository.dart';
-import '../../../mock/mock_data.dart';
+import '../../../data/repositories/auth_repository.dart';
+import '../../home/controllers/home_controller.dart';
 
 class CallHistoryController extends GetxController {
   final CallRepository _callRepository;
@@ -26,8 +28,39 @@ class CallHistoryController extends GetxController {
     errorMessage.value = '';
 
     try {
-      final calls =
-          await _callRepository.getCallHistory(MockData.currentUserId);
+      String userId = '';
+      try {
+        if (Get.isRegistered<AuthRepository>()) {
+          final authUser = await Get.find<AuthRepository>().getCurrentUser();
+          if (authUser != null && authUser.id.isNotEmpty) {
+            userId = authUser.id;
+          }
+        }
+      } catch (_) {}
+
+      if (userId.isEmpty && Get.isRegistered<HomeController>()) {
+        final homeUser = Get.find<HomeController>().currentUser.value;
+        if (homeUser.id.isNotEmpty) {
+          userId = homeUser.id;
+        }
+      }
+
+      if (userId.isEmpty || userId == 'user_current') {
+        try {
+          if (Supabase.instance.isInitialized) {
+            final supaId = Supabase.instance.client.auth.currentUser?.id;
+            if (supaId != null && supaId.isNotEmpty) {
+              userId = supaId;
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (userId.isEmpty) {
+        userId = 'user_current';
+      }
+
+      final calls = await _callRepository.getCallHistory(userId);
       allCalls.value = calls;
       _applyFilter();
     } catch (e) {

@@ -8,7 +8,7 @@ abstract class CallingService {
     required String receiverId,
     required CallType type,
   });
-  Future<void> acceptCall(String callId);
+  Future<void> acceptCall(String callId, [CallType? type]);
   Future<void> rejectCall(String callId);
   Future<void> endCall(String callId);
   Future<void> toggleMute(String callId);

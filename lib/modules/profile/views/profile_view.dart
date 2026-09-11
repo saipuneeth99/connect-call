@@ -36,12 +36,59 @@ class ProfileView extends GetView<ProfileController> {
               padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
               child: Obx(() => Column(
                     children: [
-                      AppAvatar(
-                        name: controller.user.value.name,
-                        imageUrl: controller.user.value.avatarUrl,
-                        size: AvatarSize.extraLarge,
-                        showOnlineStatus: true,
-                        isOnline: true,
+                      GestureDetector(
+                        onTap: () => controller.showPhotoOptionsSheet(context),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            AppAvatar(
+                              name: controller.user.value.name,
+                              imageUrl: controller.user.value.avatarUrl,
+                              size: AvatarSize.extraLarge,
+                              showOnlineStatus: true,
+                              isOnline: true,
+                            ),
+                            Positioned(
+                              right: 2,
+                              bottom: 2,
+                              child: Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.primary,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: theme.scaffoldBackgroundColor,
+                                    width: 2,
+                                  ),
+                                ),
+                                child: const Icon(
+                                  Icons.camera_alt,
+                                  size: 14,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                            if (controller.isUploadingAvatar.value)
+                              Positioned.fill(
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.45),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Center(
+                                    child: SizedBox(
+                                      width: 28,
+                                      height: 28,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 3,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: AppSpacing.lg),
                       Text(
@@ -74,7 +121,7 @@ class ProfileView extends GetView<ProfileController> {
             _SettingsTile(
               icon: Icons.photo_camera_outlined,
               title: 'Change Profile Picture',
-              onTap: () {},
+              onTap: () => controller.showPhotoOptionsSheet(context),
             ),
 
             const SizedBox(height: AppSpacing.xxl),

@@ -1,4 +1,5 @@
 import 'package:get/get.dart';
+import '../../modules/auth/controllers/auth_controller.dart';
 import '../../data/repositories/auth_repository.dart';
 import '../../data/repositories/user_repository.dart';
 import '../../data/repositories/call_repository.dart';
@@ -21,6 +22,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../data/services/supabase_user_service.dart';
 import '../../data/services/supabase_storage_service.dart';
 import '../../data/services/livekit_calling_service.dart';
+
+import '../../modules/calling/bindings/calling_binding.dart';
 
 class InitialBinding extends Bindings {
   @override
@@ -59,5 +62,15 @@ class InitialBinding extends Bindings {
     Get.put(AuthRepository(Get.find<AuthService>()), permanent: true);
     Get.put(UserRepository(Get.find<UserService>()), permanent: true);
     Get.put(CallRepository(Get.find<CallingService>()), permanent: true);
+    Get.lazyPut(
+      () => AuthController(
+        Get.find<AuthRepository>(),
+        Get.find<UserRepository>(),
+      ),
+      fenix: true,
+    );
+
+    // Calling Controller (registered permanently for real-time signaling)
+    CallingBinding().dependencies();
   }
 }

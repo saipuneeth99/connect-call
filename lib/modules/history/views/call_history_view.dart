@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../app/routes/app_routes.dart';
+import '../../../data/models/app_user.dart';
+import '../../../data/models/call_status.dart';
 import '../../../widgets/call_tile.dart';
 import '../../../widgets/empty_view.dart';
 import '../../../widgets/error_view.dart';
@@ -97,6 +99,22 @@ class CallHistoryView extends GetView<CallHistoryController> {
                         onTap: () => Get.toNamed(
                           AppRoutes.callDetail,
                           arguments: call,
+                        ),
+                        onCallBack: () => Get.toNamed(
+                          call.type == CallType.video
+                              ? AppRoutes.videoCall
+                              : AppRoutes.audioCall,
+                          arguments: {
+                            'receiverId': call.otherParticipant.id,
+                            'callType': call.type,
+                            'user': AppUser(
+                              id: call.otherParticipant.id,
+                              name: call.otherParticipant.name,
+                              avatarUrl: call.otherParticipant.avatarUrl,
+                              email: '',
+                              isOnline: true,
+                            ),
+                          },
                         ),
                       );
                     },

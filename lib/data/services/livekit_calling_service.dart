@@ -4,7 +4,6 @@ import 'package:livekit_client/livekit_client.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/config/livekit_config.dart';
 import '../../core/utils/livekit_token_generator.dart';
-import '../../mock/mock_data.dart';
 import '../models/call.dart';
 import '../models/call_participant.dart';
 import '../models/call_status.dart';
@@ -16,6 +15,8 @@ class LiveKitCallingService implements CallingService {
 
   final Map<String, StreamController<CallStatus>> _statusControllers = {};
   final Map<String, Call> _activeCalls = {};
+  Timer? _ringingTimer;
+  bool _isSpeakerOn = false;
 
   final ValueNotifier<LocalVideoTrack?> localVideoTrackNotifier =
       ValueNotifier<LocalVideoTrack?>(null);
@@ -34,10 +35,29 @@ class LiveKitCallingService implements CallingService {
     final controller = _getOrCreateStatusController(callId);
     controller.add(CallStatus.calling);
 
+    String callerName = 'You';
+    String receiverName = 'Remote User';
+    try {
+      if (Supabase.instance.isInitialized) {
+        final users = await Supabase.instance.client
+            .from('users')
+            .select('id, name')
+            .inFilter('id', [callerId, receiverId]);
+        for (final u in (users as List)) {
+          if (u['id'] == callerId && u['name'] != null) {
+            callerName = u['name'] as String;
+          }
+          if (u['id'] == receiverId && u['name'] != null) {
+            receiverName = u['name'] as String;
+          }
+        }
+      }
+    } catch (_) {}
+
     final call = Call(
       id: callId,
-      caller: CallParticipant(id: callerId, name: 'You'),
-      receiver: CallParticipant(id: receiverId, name: 'Remote User'),
+      caller: CallParticipant(id: callerId, name: callerName),
+      receiver: CallParticipant(id: receiverId, name: receiverName),
       type: type,
       status: CallStatus.calling,
       direction: CallDirection.outgoing,
@@ -66,6 +86,15 @@ class LiveKitCallingService implements CallingService {
 
       await _room!.connect(LiveKitConfig.url, token);
 
+      // Start audio playback engine and route audio to loudspeaker
+      try {
+        await _room!.startAudio();
+        await AudioManager.instance.setSpeakerOutputPreferred(true, force: true);
+        _isSpeakerOn = true;
+      } catch (e) {
+        debugPrint('startCall audio setup error: $e');
+      }
+
       // Publish mic
       await _room!.localParticipant?.setMicrophoneEnabled(true);
 
@@ -75,11 +104,25 @@ class LiveKitCallingService implements CallingService {
         _updateLocalTrack();
       }
 
-      controller.add(CallStatus.connected);
+      controller.add(CallStatus.ringing);
       _activeCalls[callId] = call.copyWith(
-        status: CallStatus.connected,
-        answeredAt: DateTime.now(),
+        status: CallStatus.ringing,
       );
+      await _logCallToSupabase(_activeCalls[callId]!);
+
+      // Ringing timeout (45 seconds) if unanswered
+      _ringingTimer?.cancel();
+      _ringingTimer = Timer(const Duration(seconds: 45), () {
+        if (_activeCalls[callId]?.status == CallStatus.ringing) {
+          controller.add(CallStatus.missed);
+          _activeCalls[callId] = _activeCalls[callId]!.copyWith(
+            status: CallStatus.missed,
+            endedAt: DateTime.now(),
+          );
+          _logCallToSupabase(_activeCalls[callId]!);
+          _cleanupRoom();
+        }
+      });
     } catch (e) {
       debugPrint('LiveKit startCall error: $e');
       controller.add(CallStatus.failed);
@@ -92,12 +135,16 @@ class LiveKitCallingService implements CallingService {
   }
 
   @override
-  Future<void> acceptCall(String callId) async {
+  Future<void> acceptCall(String callId, [CallType? type]) async {
     final controller = _getOrCreateStatusController(callId);
     controller.add(CallStatus.connecting);
 
-    final call = _activeCalls[callId];
-    final receiverId = call?.receiver.id ?? 'receiver';
+    var call = _activeCalls[callId];
+    call ??= await getCallById(callId);
+    final effectiveType = type ?? call?.type ?? CallType.audio;
+
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    final receiverId = call?.receiver.id ?? currentUserId ?? 'receiver';
 
     try {
       final token = LiveKitTokenGenerator.createToken(
@@ -117,12 +164,23 @@ class LiveKitCallingService implements CallingService {
 
       await _room!.connect(LiveKitConfig.url, token);
 
+      // Start audio playback engine and route audio to loudspeaker
+      try {
+        await _room!.startAudio();
+        await AudioManager.instance.setSpeakerOutputPreferred(true, force: true);
+        _isSpeakerOn = true;
+      } catch (e) {
+        debugPrint('acceptCall audio setup error: $e');
+      }
+
       await _room!.localParticipant?.setMicrophoneEnabled(true);
 
-      if (call?.type == CallType.video) {
+      if (effectiveType == CallType.video) {
         await _room!.localParticipant?.setCameraEnabled(true);
         _updateLocalTrack();
       }
+
+      _updateRemoteTrack();
 
       controller.add(CallStatus.connected);
       if (call != null) {
@@ -130,6 +188,7 @@ class LiveKitCallingService implements CallingService {
           status: CallStatus.connected,
           answeredAt: DateTime.now(),
         );
+        await _logCallToSupabase(_activeCalls[callId]!);
       }
     } catch (e) {
       debugPrint('LiveKit acceptCall error: $e');
@@ -139,6 +198,8 @@ class LiveKitCallingService implements CallingService {
 
   @override
   Future<void> rejectCall(String callId) async {
+    _ringingTimer?.cancel();
+    _ringingTimer = null;
     final controller = _getOrCreateStatusController(callId);
     controller.add(CallStatus.rejected);
 
@@ -156,6 +217,8 @@ class LiveKitCallingService implements CallingService {
 
   @override
   Future<void> endCall(String callId) async {
+    _ringingTimer?.cancel();
+    _ringingTimer = null;
     final controller = _getOrCreateStatusController(callId);
     controller.add(CallStatus.ended);
 
@@ -183,7 +246,10 @@ class LiveKitCallingService implements CallingService {
 
   @override
   Future<void> toggleSpeaker(String callId) async {
-    // WebRTC handles default audio routing
+    _isSpeakerOn = !_isSpeakerOn;
+    try {
+      await AudioManager.instance.setSpeakerOutputPreferred(_isSpeakerOn);
+    } catch (_) {}
   }
 
   @override
@@ -256,32 +322,111 @@ class LiveKitCallingService implements CallingService {
             direction:
                 isOutgoing ? CallDirection.outgoing : CallDirection.incoming,
             startedAt: DateTime.parse(json['started_at'] as String),
+            answeredAt: json['answered_at'] != null
+                ? DateTime.parse(json['answered_at'] as String)
+                : (json['duration_seconds'] != null &&
+                        (json['duration_seconds'] as num) > 0
+                    ? DateTime.parse(json['started_at'] as String)
+                    : null),
             endedAt: json['ended_at'] != null
                 ? DateTime.parse(json['ended_at'] as String)
                 : null,
           );
         }).toList();
       }
-    } catch (_) {}
-    return List.from(MockData.callHistory);
+    } catch (e) {
+      debugPrint('LiveKit getCallHistory error: $e');
+    }
+    return [];
   }
 
   @override
   Future<Call?> getCallById(String callId) async {
-    return _activeCalls[callId];
+    if (_activeCalls.containsKey(callId)) {
+      return _activeCalls[callId];
+    }
+    try {
+      if (Supabase.instance.isInitialized) {
+        final res = await Supabase.instance.client
+            .from('calls')
+            .select()
+            .eq('id', callId)
+            .maybeSingle();
+        if (res != null) {
+          final call = Call(
+            id: res['id'] as String,
+            caller: CallParticipant(
+              id: res['caller_id'] as String,
+              name: (res['caller_name'] as String?) ?? 'Caller',
+            ),
+            receiver: CallParticipant(
+              id: res['receiver_id'] as String,
+              name: (res['receiver_name'] as String?) ?? 'Receiver',
+            ),
+            type: res['type'] == 'video' ? CallType.video : CallType.audio,
+            status: CallStatus.values.firstWhere(
+              (s) => s.name == res['status'],
+              orElse: () => CallStatus.ended,
+            ),
+            direction: CallDirection.incoming,
+            startedAt: DateTime.parse(res['started_at'] as String),
+            answeredAt: res['answered_at'] != null
+                ? DateTime.parse(res['answered_at'] as String)
+                : null,
+            endedAt: res['ended_at'] != null
+                ? DateTime.parse(res['ended_at'] as String)
+                : null,
+          );
+          _activeCalls[callId] = call;
+          return call;
+        }
+      }
+    } catch (e) {
+      debugPrint('LiveKit getCallById supabase error: $e');
+    }
+    return null;
   }
 
   void _setupRoomListeners(String callId) {
     _listener = _room?.createListener();
     _listener
-      ?..on<TrackSubscribedEvent>((event) {
+      ?..on<ParticipantConnectedEvent>((event) {
+        _ringingTimer?.cancel();
+        _ringingTimer = null;
+        final ctrl = _getOrCreateStatusController(callId);
+        ctrl.add(CallStatus.connected);
+        if (_activeCalls[callId] != null) {
+          _activeCalls[callId] = _activeCalls[callId]!.copyWith(
+            status: CallStatus.connected,
+            answeredAt: DateTime.now(),
+          );
+        }
+        _updateRemoteTrack();
+        try {
+          _room?.startAudio();
+        } catch (_) {}
+      })
+      ..on<TrackSubscribedEvent>((event) {
         if (event.track is VideoTrack) {
           remoteVideoTrackNotifier.value = event.track as VideoTrack;
         }
+        try {
+          _room?.startAudio();
+        } catch (_) {}
       })
       ..on<TrackUnsubscribedEvent>((event) {
         if (event.track is VideoTrack) {
-          remoteVideoTrackNotifier.value = null;
+          _updateRemoteTrack();
+        }
+      })
+      ..on<TrackMutedEvent>((event) {
+        if (event.publication.kind == TrackType.VIDEO) {
+          _updateRemoteTrack();
+        }
+      })
+      ..on<TrackUnmutedEvent>((event) {
+        if (event.publication.kind == TrackType.VIDEO) {
+          _updateRemoteTrack();
         }
       })
       ..on<ParticipantDisconnectedEvent>((event) {
@@ -291,6 +436,23 @@ class LiveKitCallingService implements CallingService {
         remoteVideoTrackNotifier.value = null;
         localVideoTrackNotifier.value = null;
       });
+  }
+
+  void _updateRemoteTrack() {
+    if (_room == null) {
+      remoteVideoTrackNotifier.value = null;
+      return;
+    }
+    for (final participant in _room!.remoteParticipants.values) {
+      for (final publication in participant.videoTrackPublications) {
+        final track = publication.track;
+        if (track != null && !publication.muted) {
+          remoteVideoTrackNotifier.value = track;
+          return;
+        }
+      }
+    }
+    remoteVideoTrackNotifier.value = null;
   }
 
   void _updateLocalTrack() {
@@ -304,6 +466,8 @@ class LiveKitCallingService implements CallingService {
   }
 
   Future<void> _cleanupRoom() async {
+    _ringingTimer?.cancel();
+    _ringingTimer = null;
     _listener?.dispose();
     _listener = null;
     await _room?.disconnect();
@@ -332,6 +496,7 @@ class LiveKitCallingService implements CallingService {
           'type': call.type.name,
           'status': call.status.name,
           'started_at': call.startedAt.toIso8601String(),
+          'answered_at': call.answeredAt?.toIso8601String(),
           'ended_at': call.endedAt?.toIso8601String() ??
               DateTime.now().toIso8601String(),
           'duration_seconds': call.duration?.inSeconds ?? 0,

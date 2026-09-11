@@ -11,7 +11,6 @@ import '../../modules/contacts/views/contact_detail_view.dart';
 import '../../modules/profile/views/edit_profile_view.dart';
 import '../../modules/history/views/call_detail_view.dart';
 import '../../modules/calling/bindings/calling_binding.dart';
-import '../../modules/calling/views/outgoing_call_view.dart';
 import '../../modules/calling/views/incoming_call_view.dart';
 import '../../modules/calling/views/audio_call_view.dart';
 import '../../modules/calling/views/video_call_view.dart';
@@ -60,7 +59,7 @@ class AppPages {
     ),
     GetPage(
       name: AppRoutes.outgoingCall,
-      page: () => const OutgoingCallView(),
+      page: () => const AudioCallView(),
       binding: CallingBinding(),
       transition: Transition.downToUp,
       fullscreenDialog: true,
@@ -75,12 +74,16 @@ class AppPages {
     GetPage(
       name: AppRoutes.audioCall,
       page: () => const AudioCallView(),
-      transition: Transition.fade,
+      binding: CallingBinding(),
+      transition: Transition.downToUp,
+      fullscreenDialog: true,
     ),
     GetPage(
       name: AppRoutes.videoCall,
       page: () => const VideoCallView(),
-      transition: Transition.fade,
+      binding: CallingBinding(),
+      transition: Transition.fadeIn,
+      fullscreenDialog: true,
     ),
   ];
 }
