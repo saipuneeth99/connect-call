@@ -5,6 +5,7 @@ import '../../../data/models/app_user.dart';
 import '../../../data/models/call_status.dart';
 import '../../../data/repositories/call_repository.dart';
 import '../../../data/repositories/user_repository.dart';
+import '../../../data/repositories/auth_repository.dart';
 import '../../../mock/mock_data.dart';
 import '../../../app/routes/app_routes.dart';
 
@@ -51,9 +52,17 @@ class CallController extends GetxController {
       _currentCallId =
           'call_${DateTime.now().millisecondsSinceEpoch}';
 
+      String callerId = MockData.currentUserId;
+      if (Get.isRegistered<AuthRepository>()) {
+        final currentUser = await Get.find<AuthRepository>().getCurrentUser();
+        if (currentUser != null) {
+          callerId = currentUser.id;
+        }
+      }
+
       await _callRepository.startCall(
         callId: _currentCallId!,
-        callerId: MockData.currentUserId,
+        callerId: callerId,
         receiverId: receiverId,
         type: type,
       );

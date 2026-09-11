@@ -20,6 +20,7 @@ import '../../mock/mock_connectivity_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../data/services/supabase_user_service.dart';
 import '../../data/services/supabase_storage_service.dart';
+import '../../data/services/livekit_calling_service.dart';
 
 class InitialBinding extends Bindings {
   @override
@@ -46,7 +47,11 @@ class InitialBinding extends Bindings {
       Get.put<StorageService>(MockStorageService(), permanent: true);
     }
 
-    Get.put<CallingService>(MockCallingService(), permanent: true);
+    if (hasSupabase || Firebase.apps.isNotEmpty) {
+      Get.put<CallingService>(LiveKitCallingService(), permanent: true);
+    } else {
+      Get.put<CallingService>(MockCallingService(), permanent: true);
+    }
     Get.put<PermissionService>(MockPermissionService(), permanent: true);
     Get.put<ConnectivityService>(MockConnectivityService(), permanent: true);
 
