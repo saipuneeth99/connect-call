@@ -25,6 +25,11 @@ import '../../data/services/livekit_calling_service.dart';
 
 import '../../modules/calling/bindings/calling_binding.dart';
 
+import '../../data/services/contact_service.dart';
+import '../../data/services/supabase_contact_service.dart';
+import '../../mock/mock_contact_service.dart';
+import '../../data/repositories/contact_repository.dart';
+
 class InitialBinding extends Bindings {
   @override
   void dependencies() {
@@ -45,9 +50,11 @@ class InitialBinding extends Bindings {
     if (hasSupabase) {
       Get.put<UserService>(SupabaseUserService(), permanent: true);
       Get.put<StorageService>(SupabaseStorageService(), permanent: true);
+      Get.put<ContactService>(SupabaseContactService(), permanent: true);
     } else {
       Get.put<UserService>(MockUserService(), permanent: true);
       Get.put<StorageService>(MockStorageService(), permanent: true);
+      Get.put<ContactService>(MockContactService(), permanent: true);
     }
 
     if (hasSupabase || Firebase.apps.isNotEmpty) {
@@ -61,6 +68,7 @@ class InitialBinding extends Bindings {
     // Repositories
     Get.put(AuthRepository(Get.find<AuthService>()), permanent: true);
     Get.put(UserRepository(Get.find<UserService>()), permanent: true);
+    Get.put(ContactRepository(Get.find<ContactService>()), permanent: true);
     Get.put(CallRepository(Get.find<CallingService>()), permanent: true);
     Get.lazyPut(
       () => AuthController(

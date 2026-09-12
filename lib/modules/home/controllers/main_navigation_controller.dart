@@ -15,7 +15,7 @@ class MainNavigationController extends GetxController {
       }
     } else if (index == 1) {
       if (Get.isRegistered<ContactsController>()) {
-        Get.find<ContactsController>().loadUsers();
+        Get.find<ContactsController>().loadData();
       }
     } else if (index == 2) {
       if (Get.isRegistered<CallHistoryController>()) {

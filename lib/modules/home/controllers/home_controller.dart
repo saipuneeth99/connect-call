@@ -5,17 +5,20 @@ import '../../../data/models/call.dart';
 import '../../../data/repositories/call_repository.dart';
 import '../../../data/repositories/user_repository.dart';
 import '../../../data/repositories/auth_repository.dart';
+import '../../../data/repositories/contact_repository.dart';
 import '../../../data/services/call_signaling_service.dart';
 
 class HomeController extends GetxController {
   final UserRepository _userRepository;
   final CallRepository _callRepository;
   final AuthRepository? _authRepository;
+  final ContactRepository? _contactRepository;
 
   HomeController(
     this._userRepository,
     this._callRepository, [
     this._authRepository,
+    this._contactRepository,
   ]);
 
   final Rx<AppUser> currentUser = Rx<AppUser>(
@@ -90,17 +93,24 @@ class HomeController extends GetxController {
         CallSignalingService.instance.init(uid);
       }
 
+      final contactRepo = _contactRepository ??
+          (Get.isRegistered<ContactRepository>()
+              ? Get.find<ContactRepository>()
+              : null);
+
       final results = await Future.wait([
-        _userRepository.getFavorites(uid),
+        contactRepo != null
+            ? contactRepo.getContacts(uid)
+            : _userRepository.getFavorites(uid),
         _callRepository.getCallHistory(uid),
       ]);
 
-      final rawFavorites = results[0] as List<AppUser>;
+      final rawContacts = results[0] as List<AppUser>;
       final activeUid = currentUser.value.id;
       final activeEmail = currentUser.value.email.toLowerCase();
       final activeName = currentUser.value.name.toLowerCase();
 
-      favorites.value = rawFavorites.where((u) {
+      favorites.value = rawContacts.where((u) {
         if (u.id == activeUid || u.id == 'user_current') return false;
         if (activeEmail.isNotEmpty && u.email.toLowerCase() == activeEmail) {
           return false;
