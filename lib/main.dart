@@ -27,9 +27,15 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final type = data['callType']?.toString() == 'video'
       ? CallType.video
       : CallType.audio;
+  final callerName = data['callerName']?.toString() ?? 'Incoming Call';
+  await CallSignalingService.wakeAndNotifyIncoming(
+    callerName: callerName,
+    callType: type.name,
+    callId: callId,
+  );
   await CallSignalingService.showCallkitIncoming(
     callId: callId,
-    callerName: data['callerName']?.toString() ?? 'Incoming Call',
+    callerName: callerName,
     callerAvatar: data['callerAvatar']?.toString(),
     callerId: callerId,
     callType: type.name,

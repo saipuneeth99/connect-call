@@ -65,11 +65,27 @@ class SplashController extends GetxController {
           }
         } catch (_) {}
 
+        if (Get.currentRoute == AppRoutes.incomingCall ||
+            Get.currentRoute == AppRoutes.audioCall ||
+            Get.currentRoute == AppRoutes.videoCall) {
+          return;
+        }
+
         Get.offAllNamed(AppRoutes.home);
       } else {
+        if (Get.currentRoute == AppRoutes.incomingCall ||
+            Get.currentRoute == AppRoutes.audioCall ||
+            Get.currentRoute == AppRoutes.videoCall) {
+          return;
+        }
         Get.offAllNamed(AppRoutes.login);
       }
     } catch (_) {
+      if (Get.currentRoute == AppRoutes.incomingCall ||
+          Get.currentRoute == AppRoutes.audioCall ||
+          Get.currentRoute == AppRoutes.videoCall) {
+        return;
+      }
       Get.offAllNamed(AppRoutes.login);
     }
   }

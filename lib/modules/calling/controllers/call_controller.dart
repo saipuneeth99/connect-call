@@ -35,6 +35,7 @@ class CallController extends GetxController {
   final RxString dialedDigits = ''.obs;
 
   String? _currentCallId;
+  String? get currentCallId => _currentCallId;
   Timer? _durationTimer;
   DateTime? _connectedAt;
   StreamSubscription<CallStatus>? _statusSubscription;

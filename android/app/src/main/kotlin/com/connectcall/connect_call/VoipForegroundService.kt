@@ -73,12 +73,28 @@ class VoipForegroundService : Service() {
                 Log.e(TAG, "Error stopping VoipForegroundService", e)
             }
         }
+
+        fun dismissCallkit(context: Context, callId: String) {
+            try {
+                val bundle = Bundle().apply {
+                    putString(CallkitConstants.EXTRA_CALLKIT_ID, callId)
+                }
+                val endedIntent = CallkitIncomingBroadcastReceiver.getIntentEnded(context, bundle)
+                context.sendBroadcast(endedIntent)
+
+                val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                notificationManager.cancel(1001)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error dismissing callkit", e)
+            }
+        }
     }
 
     private var partialWakeLock: PowerManager.WakeLock? = null
     private var scheduler: ScheduledExecutorService? = null
     private var currentUserId: String? = null
     private var activeRingingCallId: String? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -224,19 +240,21 @@ class VoipForegroundService : Service() {
                 try {
                     java.time.Instant.parse(startedAtStr).toEpochMilli()
                 } catch (e: Exception) {
+                    val cleanStr = startedAtStr.replace(" ", "T").substring(0, kotlin.math.min(19, startedAtStr.length))
                     val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
                         timeZone = java.util.TimeZone.getTimeZone("UTC")
                     }
-                    sdf.parse(startedAtStr.substring(0, 19))?.time ?: System.currentTimeMillis()
+                    sdf.parse(cleanStr)?.time ?: System.currentTimeMillis()
                 }
             } else {
+                val cleanStr = startedAtStr.replace(" ", "T").substring(0, kotlin.math.min(19, startedAtStr.length))
                 val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
                     timeZone = java.util.TimeZone.getTimeZone("UTC")
                 }
-                sdf.parse(startedAtStr.substring(0, 19))?.time ?: System.currentTimeMillis()
+                sdf.parse(cleanStr)?.time ?: System.currentTimeMillis()
             }
             val diffMs = kotlin.math.abs(System.currentTimeMillis() - timeMs)
-            diffMs < 300000 || diffMs in 19000000..20500000
+            diffMs < 600000 || diffMs in 18000000..22000000
         } catch (e: Exception) {
             true
         }
@@ -246,23 +264,30 @@ class VoipForegroundService : Service() {
         try {
             Log.d(TAG, "Triggering native incoming call: $callId from $callerName ($callType)")
 
-            // 1. Wake screen up immediately from lock/sleep
+            // 1. Wake screen up immediately from lock/sleep (stored in field so it isn't GC'd)
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            @Suppress("DEPRECATION")
-            val screenWakeLock = powerManager.newWakeLock(
-                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
-                "ConnectCall:IncomingScreenWakeup"
-            ).apply {
-                setReferenceCounted(false)
-                acquire(30000)
+            try {
+                if (screenWakeLock?.isHeld == true) {
+                    screenWakeLock?.release()
+                }
+                @Suppress("DEPRECATION")
+                screenWakeLock = powerManager.newWakeLock(
+                    PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                    "ConnectCall:IncomingScreenWakeup"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire(45000)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to acquire screen wake lock", e)
             }
 
             // 2. Build full-screen high-priority notification with system ringtone
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            val channelId = "connect_call_voip_v4"
+            val channelId = "connect_call_voip_v5"
+            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
                 val audioAttributes = AudioAttributes.Builder()
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
@@ -273,36 +298,47 @@ class VoipForegroundService : Service() {
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
                     setSound(ringtoneUri, audioAttributes)
-                    lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                    lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                     setBypassDnd(true)
                 }
                 notificationManager.createNotificationChannel(channel)
             }
 
             val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                 action = Intent.ACTION_MAIN
                 addCategory(Intent.CATEGORY_LAUNCHER)
                 putExtra("route", "/incoming-call")
+                putExtra("call_id", callId)
             }
 
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             } else {
                 PendingIntent.FLAG_UPDATE_CURRENT
             }
 
-            val pendingFullScreenIntent = PendingIntent.getActivity(this, 1001, fullScreenIntent, flags)
+            val pendingFullScreenIntent = PendingIntent.getActivity(this, 1001, fullScreenIntent, pendingFlags)
 
-            val answerIntent = Intent(this, CallActionReceiver::class.java).apply {
-                action = CallActionReceiver.ACTION_ANSWER_CALL
+            // Action: Answer (direct Activity start so Android never blocks it)
+            val answerActivityIntent = Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                action = "com.connectcall.ACTION_ANSWER"
+                putExtra("route", "/incoming-call")
+                putExtra("auto_accept", true)
+                putExtra("call_id", callId)
             }
-            val pendingAnswerIntent = PendingIntent.getBroadcast(this, 1002, answerIntent, flags)
+            val pendingAnswerIntent = PendingIntent.getActivity(this, 1002, answerActivityIntent, pendingFlags)
 
+            // Action: Decline
             val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
                 action = CallActionReceiver.ACTION_DECLINE_CALL
+                putExtra("call_id", callId)
             }
-            val pendingDeclineIntent = PendingIntent.getBroadcast(this, 1003, declineIntent, flags)
+            val pendingDeclineIntent = PendingIntent.getBroadcast(this, 1003, declineIntent, pendingFlags)
 
             val builder = NotificationCompat.Builder(this, channelId)
                 .setSmallIcon(R.mipmap.ic_launcher)
@@ -312,6 +348,8 @@ class VoipForegroundService : Service() {
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setAutoCancel(true)
                 .setOngoing(true)
+                .setSound(ringtoneUri, android.media.AudioManager.STREAM_RING)
+                .setVibrate(longArrayOf(0, 1000, 500, 1000, 500, 1000))
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setFullScreenIntent(pendingFullScreenIntent, true)
                 .setContentIntent(pendingFullScreenIntent)
@@ -319,6 +357,11 @@ class VoipForegroundService : Service() {
                 .addAction(android.R.drawable.ic_menu_call, "Answer", pendingAnswerIntent)
 
             notificationManager.notify(1001, builder.build())
+
+            // Pop up over lock screen directly if possible
+            try {
+                startActivity(fullScreenIntent)
+            } catch (e: Exception) {}
 
             // 3. Build CallKit parameter bundle
             val bundle = Bundle().apply {
@@ -369,18 +412,7 @@ class VoipForegroundService : Service() {
     }
 
     private fun dismissCallkit(callId: String) {
-        try {
-            val bundle = Bundle().apply {
-                putString(CallkitConstants.EXTRA_CALLKIT_ID, callId)
-            }
-            val endedIntent = CallkitIncomingBroadcastReceiver.getIntentEnded(this, bundle)
-            sendBroadcast(endedIntent)
-
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.cancel(1001)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error dismissing callkit", e)
-        }
+        dismissCallkit(this, callId)
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {

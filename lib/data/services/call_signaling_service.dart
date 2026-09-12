@@ -23,11 +23,13 @@ class CallSignalingService {
   static Future<void> wakeAndNotifyIncoming({
     required String callerName,
     required String callType,
+    String? callId,
   }) async {
     try {
       await _voipChannel.invokeMethod('showIncomingCall', {
         'callerName': callerName,
         'callType': callType,
+        'callId': ?callId,
       });
     } catch (e) {
       debugPrint('Voip channel error: $e');
@@ -196,22 +198,51 @@ class CallSignalingService {
 
   void _setupMethodCallHandler() {
     _voipChannel.setMethodCallHandler((call) async {
+      final args = call.arguments is Map
+          ? (call.arguments as Map).cast<String, dynamic>()
+          : null;
+      final callId = args?['callId'] as String?;
+
       if (call.method == 'onCallDeclinedFromNotification') {
-        debugPrint('Signaling: call declined from notification');
+        debugPrint('Signaling: call declined from notification (callId: $callId)');
+        dismissVoipNotification();
+        if (callId != null && Supabase.instance.isInitialized) {
+          try {
+            await Supabase.instance.client
+                .from('calls')
+                .update({
+                  'status': 'rejected',
+                  'ended_at': DateTime.now().toIso8601String(),
+                })
+                .eq('id', callId);
+          } catch (_) {}
+        }
         try {
           if (Get.isRegistered<CallController>()) {
             Get.find<CallController>().rejectCall();
           }
         } catch (_) {}
       } else if (call.method == 'onCallAcceptedFromNotification') {
-        debugPrint('Signaling: call accepted from notification');
+        debugPrint('Signaling: call accepted from notification (callId: $callId)');
+        dismissVoipNotification();
+        if (callId != null) {
+          await _ensureCallLoaded(callId);
+        }
         try {
-          if (Get.isRegistered<CallController>()) {
-            Get.find<CallController>().acceptCall();
-          }
-        } catch (_) {}
+          CallingBinding().dependencies();
+          final callCtrl = Get.find<CallController>();
+          await callCtrl.acceptCall();
+        } catch (e) {
+          debugPrint('Error accepting call from notification: $e');
+        }
       } else if (call.method == 'navigateToIncomingCall') {
-        debugPrint('Signaling: navigateToIncomingCall from native notification');
+        debugPrint('Signaling: navigateToIncomingCall from native notification (callId: $callId)');
+        if (callId != null) {
+          await _ensureCallLoaded(callId);
+        }
+        if (Get.isBottomSheetOpen == true) Get.back();
+        if (Get.isDialogOpen == true) Get.back();
+
         if (Get.currentRoute != AppRoutes.incomingCall &&
             Get.currentRoute != AppRoutes.audioCall &&
             Get.currentRoute != AppRoutes.videoCall) {
@@ -219,6 +250,67 @@ class CallSignalingService {
         }
       }
     });
+  }
+
+  Future<void> _ensureCallLoaded(String callId) async {
+    try {
+      CallingBinding().dependencies();
+      final callCtrl = Get.find<CallController>();
+      if (callCtrl.currentCallId == callId &&
+          (callCtrl.callStatus.value == CallStatus.ringing ||
+              callCtrl.callStatus.value == CallStatus.connected)) {
+        return;
+      }
+
+      final cached = _incomingCallData[callId];
+      if (cached != null) {
+        final callerId = cached['callerId'] as String?;
+        final callerName = (cached['callerName'] as String?) ?? 'Incoming Call';
+        final typeStr = cached['callType'] as String?;
+        final type = typeStr == 'video' ? CallType.video : CallType.audio;
+        if (callerId != null) {
+          callCtrl.setupIncomingCall(
+            caller: AppUser(
+              id: callerId,
+              name: callerName,
+              email: '',
+              isOnline: true,
+            ),
+            type: type,
+            callId: callId,
+          );
+          return;
+        }
+      }
+
+      if (Supabase.instance.isInitialized) {
+        final res = await Supabase.instance.client
+            .from('calls')
+            .select()
+            .eq('id', callId)
+            .maybeSingle();
+        if (res != null) {
+          final callerId = res['caller_id'] as String?;
+          final callerName = (res['caller_name'] as String?) ?? 'Incoming Call';
+          final typeStr = res['type'] as String?;
+          final type = typeStr == 'video' ? CallType.video : CallType.audio;
+          if (callerId != null) {
+            callCtrl.setupIncomingCall(
+              caller: AppUser(
+                id: callerId,
+                name: callerName,
+                email: '',
+                isOnline: true,
+              ),
+              type: type,
+              callId: callId,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading call record in _ensureCallLoaded: $e');
+    }
   }
 
   StreamSubscription? _callkitSubscription;
@@ -362,6 +454,7 @@ class CallSignalingService {
     // Keep the native listener alive. Settings screens are never opened
     // implicitly during login; the app can request those permissions explicitly.
     startForegroundService(userId);
+    requestIgnoreBatteryOptimizations();
     if (Platform.isAndroid && _isAppForeground) {
       try {
         await FlutterCallkitIncoming.requestNotificationPermission({
@@ -529,7 +622,13 @@ class CallSignalingService {
 
   void _handleIncomingCallFromRecord(Map<String, dynamic> record) {
     final callId = record['id'] as String?;
-    if (callId == null || callId == _lastHandledCallId) return;
+    if (callId == null ||
+        (callId == _lastHandledCallId &&
+            (Get.currentRoute == AppRoutes.incomingCall ||
+                Get.currentRoute == AppRoutes.audioCall ||
+                Get.currentRoute == AppRoutes.videoCall))) {
+      return;
+    }
 
     final callerId = record['caller_id'] as String?;
     final callerName = (record['caller_name'] as String?) ?? 'Incoming Call';
@@ -689,6 +788,7 @@ class CallSignalingService {
     wakeAndNotifyIncoming(
       callerName: caller.name,
       callType: type.name,
+      callId: callId,
     );
 
     // 2. Always trigger native CallKit incoming call UI (rings with real phone ringtone on lockscreen)
