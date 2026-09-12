@@ -72,9 +72,9 @@ class Call {
       'type': type.name,
       'status': status.name,
       'direction': direction.name,
-      'started_at': startedAt.toIso8601String(),
-      'answered_at': answeredAt?.toIso8601String(),
-      'ended_at': endedAt?.toIso8601String(),
+      'started_at': startedAt.toUtc().toIso8601String(),
+      'answered_at': answeredAt?.toUtc().toIso8601String(),
+      'ended_at': endedAt?.toUtc().toIso8601String(),
     };
   }
 

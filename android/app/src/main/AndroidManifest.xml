@@ -63,6 +63,7 @@
             android:name=".VoipForegroundService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="dataSync|phoneCall|microphone|camera" />
 
         <receiver

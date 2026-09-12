@@ -221,15 +221,22 @@ class VoipForegroundService : Service() {
         if (startedAtStr.isEmpty()) return true
         return try {
             val timeMs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                java.time.Instant.parse(startedAtStr).toEpochMilli()
+                try {
+                    java.time.Instant.parse(startedAtStr).toEpochMilli()
+                } catch (e: Exception) {
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
+                        timeZone = java.util.TimeZone.getTimeZone("UTC")
+                    }
+                    sdf.parse(startedAtStr.substring(0, 19))?.time ?: System.currentTimeMillis()
+                }
             } else {
                 val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
                     timeZone = java.util.TimeZone.getTimeZone("UTC")
                 }
                 sdf.parse(startedAtStr.substring(0, 19))?.time ?: System.currentTimeMillis()
             }
-            val age = System.currentTimeMillis() - timeMs
-            age in -30000..120000
+            val diffMs = kotlin.math.abs(System.currentTimeMillis() - timeMs)
+            diffMs < 300000 || diffMs in 19000000..20500000
         } catch (e: Exception) {
             true
         }
@@ -252,7 +259,7 @@ class VoipForegroundService : Service() {
 
             // 2. Build full-screen high-priority notification with system ringtone
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            val channelId = "connect_call_voip_v3"
+            val channelId = "connect_call_voip_v4"
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
@@ -373,6 +380,26 @@ class VoipForegroundService : Service() {
             notificationManager.cancel(1001)
         } catch (e: Exception) {
             Log.e(TAG, "Error dismissing callkit", e)
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        try {
+            val uid = currentUserId ?: getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(PREF_USER_ID, null)
+            val restartIntent = Intent(applicationContext, VoipForegroundService::class.java).apply {
+                action = ACTION_START
+                if (!uid.isNullOrEmpty()) {
+                    putExtra(EXTRA_USER_ID, uid)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                applicationContext.startForegroundService(restartIntent)
+            } else {
+                applicationContext.startService(restartIntent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in onTaskRemoved", e)
         }
     }
 

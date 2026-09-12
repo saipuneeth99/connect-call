@@ -63,7 +63,7 @@ class LiveKitCallingService implements CallingService {
       type: type,
       status: CallStatus.calling,
       direction: CallDirection.outgoing,
-      startedAt: DateTime.now(),
+      startedAt: DateTime.now().toUtc(),
     );
     _activeCalls[callId] = call;
 
@@ -513,9 +513,9 @@ class LiveKitCallingService implements CallingService {
           'receiver_name': call.receiver.name,
           'type': call.type.name,
           'status': call.status.name,
-          'started_at': call.startedAt.toIso8601String(),
-          'answered_at': call.answeredAt?.toIso8601String(),
-          'ended_at': call.endedAt?.toIso8601String(),
+          'started_at': call.startedAt.toUtc().toIso8601String(),
+          'answered_at': call.answeredAt?.toUtc().toIso8601String(),
+          'ended_at': call.endedAt?.toUtc().toIso8601String(),
           'duration_seconds': durationSeconds,
         };
 
