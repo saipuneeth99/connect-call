@@ -1,10 +1,14 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
+import 'dart:io';
+
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_callkit_incoming/entities/entities.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:get/get.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../../app/routes/app_routes.dart';
 import '../models/app_user.dart';
 import '../models/call_status.dart';
@@ -12,7 +16,9 @@ import '../../modules/calling/controllers/call_controller.dart';
 import '../../modules/calling/bindings/calling_binding.dart';
 
 class CallSignalingService {
-  static const _voipChannel = MethodChannel('com.connectcall.connect_call/voip');
+  static const _voipChannel = MethodChannel(
+    'com.connectcall.connect_call/voip',
+  );
 
   static Future<void> wakeAndNotifyIncoming({
     required String callerName,
@@ -28,10 +34,26 @@ class CallSignalingService {
     }
   }
 
+  /// Lets Android hand presentation over to the native foreground listener
+  /// while the Flutter app is backgrounded. This avoids duplicate call UIs.
+  static Future<void> setAppInForeground(bool isForeground) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _voipChannel.invokeMethod('setAppInForeground', {
+        'isForeground': isForeground,
+      });
+    } catch (_) {}
+  }
+
+  static Future<void> markCallConnected(String callId) async {
+    try {
+      await FlutterCallkitIncoming.setCallConnected(callId);
+    } catch (_) {}
+  }
+
   static Future<void> dismissVoipNotification() async {
     try {
       await _voipChannel.invokeMethod('dismissIncomingCall');
-      await endAllCallkitCalls();
     } catch (_) {}
   }
 
@@ -77,9 +99,17 @@ class CallSignalingService {
           textAccept: 'Answer',
           textDecline: 'Decline',
         ),
+        ios: const IOSParams(
+          handleType: 'generic',
+          supportsVideo: true,
+          includesCallsInRecents: true,
+          configureAudioSession: true,
+        ),
       );
       await FlutterCallkitIncoming.showCallkitIncoming(params);
-      debugPrint('FlutterCallkitIncoming.showCallkitIncoming triggered for $callId');
+      debugPrint(
+        'FlutterCallkitIncoming.showCallkitIncoming triggered for $callId',
+      );
     } catch (e) {
       debugPrint('showCallkitIncoming error: $e');
     }
@@ -114,7 +144,9 @@ class CallSignalingService {
       if (userId != null && userId.isNotEmpty) {
         await _voipChannel.invokeMethod('setUserId', {'userId': userId});
       }
-      await _voipChannel.invokeMethod('startForegroundService', {'userId': userId});
+      await _voipChannel.invokeMethod('startForegroundService', {
+        'userId': userId,
+      });
     } catch (_) {}
   }
 
@@ -140,9 +172,26 @@ class CallSignalingService {
   static CallSignalingService get instance =>
       _instance ??= CallSignalingService._();
 
+  bool _isAppForeground = true;
+  final Map<String, Map<String, dynamic>> _incomingCallData = {};
+  StreamSubscription<String>? _fcmTokenSubscription;
+  bool _pushTokensInitialized = false;
+
   CallSignalingService._() {
+    WidgetsBinding.instance.addObserver(_LifecycleObserver(this));
     _setupMethodCallHandler();
     _setupCallkitListener();
+    setAppInForeground(true);
+  }
+
+  void _onLifecycleChanged(AppLifecycleState state) {
+    final isForeground = state == AppLifecycleState.resumed;
+    if (_isAppForeground == isForeground) return;
+    _isAppForeground = isForeground;
+    setAppInForeground(isForeground);
+    if (isForeground) {
+      _checkPendingCalls();
+    }
   }
 
   void _setupMethodCallHandler() {
@@ -162,18 +211,32 @@ class CallSignalingService {
 
   void _setupCallkitListener() {
     _callkitSubscription?.cancel();
-    _callkitSubscription = FlutterCallkitIncoming.onEvent.listen((CallEvent? event) async {
+    _callkitSubscription = FlutterCallkitIncoming.onEvent.listen((
+      CallEvent? event,
+    ) async {
       if (event == null) return;
       debugPrint('CallKit event received: ${event.eventName}');
 
       switch (event) {
+        case CallEventActionDidUpdateDevicePushTokenVoip():
+          final token = await FlutterCallkitIncoming.getDevicePushTokenVoIP();
+          if (token != null && token.isNotEmpty) {
+            await _persistPushToken('voip_token', token);
+          }
+          break;
+
         case CallEventActionCallAccept(:final callKitParams):
           final extra = callKitParams.extra ?? {};
           final callId = (extra['callId'] as String?) ?? callKitParams.id;
           final callerId = extra['callerId'] as String?;
-          final callerName = (extra['callerName'] as String?) ?? callKitParams.nameCaller ?? 'Incoming Call';
+          final callerName =
+              (extra['callerName'] as String?) ??
+              callKitParams.nameCaller ??
+              'Incoming Call';
           final callTypeStr = (extra['callType'] as String?) ?? 'audio';
-          final callType = callTypeStr == 'video' ? CallType.video : CallType.audio;
+          final callType = callTypeStr == 'video'
+              ? CallType.video
+              : CallType.audio;
 
           debugPrint('CallKit: Call accepted for $callId');
           dismissVoipNotification();
@@ -190,14 +253,6 @@ class CallSignalingService {
             callId: callId,
           );
           await callCtrl.acceptCall();
-          if (Get.currentRoute != AppRoutes.audioCall &&
-              Get.currentRoute != AppRoutes.videoCall) {
-            if (callType == CallType.video) {
-              Get.toNamed(AppRoutes.videoCall);
-            } else {
-              Get.toNamed(AppRoutes.audioCall);
-            }
-          }
           break;
 
         case CallEventActionCallDecline(:final callKitParams):
@@ -211,10 +266,13 @@ class CallSignalingService {
             sendReply(callerId: callerId, callId: callId, status: 'rejected');
             try {
               if (Supabase.instance.isInitialized) {
-                await Supabase.instance.client.from('calls').update({
-                  'status': 'rejected',
-                  'ended_at': DateTime.now().toIso8601String(),
-                }).eq('id', callId);
+                await Supabase.instance.client
+                    .from('calls')
+                    .update({
+                      'status': 'rejected',
+                      'ended_at': DateTime.now().toIso8601String(),
+                    })
+                    .eq('id', callId);
               }
             } catch (_) {}
           }
@@ -226,11 +284,32 @@ class CallSignalingService {
         case CallEventActionCallTimeout(:final id):
           debugPrint('CallKit: Call timeout for $id');
           dismissVoipNotification();
+          final timeoutData = _incomingCallData.remove(id);
+          final timeoutCallerId = timeoutData?['callerId'] as String?;
+          if (timeoutCallerId != null) {
+            sendReply(
+              callerId: timeoutCallerId,
+              callId: id,
+              status: 'rejected',
+            );
+          }
+          try {
+            if (Supabase.instance.isInitialized) {
+              await Supabase.instance.client
+                  .from('calls')
+                  .update({
+                    'status': 'missed',
+                    'ended_at': DateTime.now().toIso8601String(),
+                  })
+                  .eq('id', id);
+            }
+          } catch (_) {}
           break;
 
         case CallEventActionCallEnded():
           debugPrint('CallKit: Call ended');
           dismissVoipNotification();
+          endAllCallkitCalls();
           if (Get.isRegistered<CallController>()) {
             Get.find<CallController>().endCall();
           }
@@ -266,10 +345,21 @@ class CallSignalingService {
     await dispose();
     _currentUserId = userId;
 
-    // Start background keep-alive service, overlay permission, and battery optimization exemption
+    // Keep the native listener alive. Settings screens are never opened
+    // implicitly during login; the app can request those permissions explicitly.
     startForegroundService(userId);
-    requestIgnoreBatteryOptimizations();
-    requestOverlayPermission();
+    if (Platform.isAndroid && _isAppForeground) {
+      try {
+        await FlutterCallkitIncoming.requestNotificationPermission({
+          'title': 'Allow ConnectCall calls',
+          'rationaleMessagePermission': 'Notifications are required to receive calls while ConnectCall is in the background.',
+        });
+        if (!await FlutterCallkitIncoming.canUseFullScreenIntent()) {
+          await FlutterCallkitIncoming.requestFullIntentPermission();
+        }
+      } catch (_) {}
+    }
+    await _initPushTokens();
     _setupCallkitListener();
 
     try {
@@ -292,7 +382,8 @@ class CallSignalingService {
       _myChannel!.onBroadcast(
         event: 'call_reply',
         callback: (rawPayload) {
-          final payload = (rawPayload['payload'] is Map
+          final payload =
+              (rawPayload['payload'] is Map
                   ? (rawPayload['payload'] as Map).cast<String, dynamic>()
                   : null) ??
               rawPayload;
@@ -304,7 +395,8 @@ class CallSignalingService {
       _myChannel!.onBroadcast(
         event: 'call_ended',
         callback: (rawPayload) {
-          final payload = (rawPayload['payload'] is Map
+          final payload =
+              (rawPayload['payload'] is Map
                   ? (rawPayload['payload'] as Map).cast<String, dynamic>()
                   : null) ??
               rawPayload;
@@ -318,33 +410,79 @@ class CallSignalingService {
       debugPrint('CallSignalingService subscribed to broadcast $channelName');
 
       // 2. Database Realtime listener for calls table changes
-      _dbCallsChannel = Supabase.instance.client
-          .channel('incoming_calls_db_$userId')
-          .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'calls',
-            callback: (payload) {
-              final record = payload.newRecord;
-              if (record.isNotEmpty &&
-                  record['receiver_id'] == userId &&
-                  record['status'] == 'ringing') {
-                debugPrint('Signaling: detected incoming call from Postgres change: ${record['id']}');
-                _handleIncomingCallFromRecord(record);
-              }
-            },
-          )
-        ..subscribe();
+      _dbCallsChannel =
+          Supabase.instance.client
+              .channel('incoming_calls_db_$userId')
+              .onPostgresChanges(
+                event: PostgresChangeEvent.all,
+                schema: 'public',
+                table: 'calls',
+                callback: (payload) {
+                  final record = payload.newRecord;
+                  if (record.isNotEmpty &&
+                      record['receiver_id'] == userId &&
+                      record['status'] == 'ringing') {
+                    debugPrint(
+                      'Signaling: detected incoming call from Postgres change: ${record['id']}',
+                    );
+                    _handleIncomingCallFromRecord(record);
+                  }
+                },
+              )
+            ..subscribe();
       debugPrint('CallSignalingService subscribed to DB calls realtime');
 
       // 3. Fast periodic check for calls inserted while phone was sleeping / transitioning
       _pendingCheckTimer?.cancel();
-      _pendingCheckTimer = Timer.periodic(const Duration(milliseconds: 2000), (_) {
+      _pendingCheckTimer = Timer.periodic(const Duration(milliseconds: 2000), (
+        _,
+      ) {
         _checkPendingCalls();
       });
       _checkPendingCalls();
     } catch (e) {
       debugPrint('CallSignalingService init error: $e');
+    }
+  }
+
+  Future<void> _initPushTokens() async {
+    if (_pushTokensInitialized) return;
+    _pushTokensInitialized = true;
+
+    try {
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token != null && token.isNotEmpty) {
+        await _persistPushToken('fcm_token', token);
+      }
+      _fcmTokenSubscription = FirebaseMessaging.instance.onTokenRefresh.listen(
+        (token) => _persistPushToken('fcm_token', token),
+      );
+    } catch (e) {
+      debugPrint('FCM token registration unavailable: $e');
+    }
+
+    try {
+      final voipToken = await FlutterCallkitIncoming.getDevicePushTokenVoIP();
+      if (voipToken != null && voipToken.isNotEmpty) {
+        await _persistPushToken('voip_token', voipToken);
+      }
+    } catch (e) {
+      debugPrint('VoIP token registration unavailable: $e');
+    }
+  }
+
+  Future<void> _persistPushToken(String column, String token) async {
+    final userId = _currentUserId;
+    if (userId == null || userId.isEmpty) return;
+    try {
+      if (Supabase.instance.isInitialized) {
+        await Supabase.instance.client
+            .from('users')
+            .update({column: token})
+            .eq('id', userId);
+      }
+    } catch (e) {
+      debugPrint('Push token persistence failed: $e');
     }
   }
 
@@ -432,6 +570,26 @@ class CallSignalingService {
         },
       );
       debugPrint('Signaling: sent call_invite to user_signaling_$receiverId');
+
+      // Realtime reaches a live app, but it cannot wake a terminated Android
+      // process. The edge function sends a high-priority FCM data message to
+      // the receiver's saved device token. Failure is non-fatal because the
+      // realtime/native polling paths may still deliver the call.
+      try {
+        await Supabase.instance.client.functions.invoke(
+          'send-call-notification',
+          body: {
+            'receiverId': receiverId,
+            'callId': callId,
+            'callerId': caller.id,
+            'callerName': caller.name,
+            'callerAvatar': caller.avatarUrl,
+            'callType': type.name,
+          },
+        );
+      } catch (e) {
+        debugPrint('Signaling: push notification unavailable: $e');
+      }
     } catch (e) {
       debugPrint('CallSignalingService sendInvite error: $e');
     }
@@ -450,12 +608,11 @@ class CallSignalingService {
 
       await channel.sendBroadcastMessage(
         event: 'call_reply',
-        payload: {
-          'callId': callId,
-          'status': status,
-        },
+        payload: {'callId': callId, 'status': status},
       );
-      debugPrint('Signaling: sent call_reply ($status) to user_signaling_$callerId');
+      debugPrint(
+        'Signaling: sent call_reply ($status) to user_signaling_$callerId',
+      );
     } catch (e) {
       debugPrint('CallSignalingService sendReply error: $e');
     }
@@ -473,9 +630,7 @@ class CallSignalingService {
 
       await channel.sendBroadcastMessage(
         event: 'call_ended',
-        payload: {
-          'callId': callId,
-        },
+        payload: {'callId': callId},
       );
       debugPrint('Signaling: sent call_ended to $otherUserId');
     } catch (e) {
@@ -485,7 +640,8 @@ class CallSignalingService {
 
   void _handleIncomingInvite(Map<String, dynamic> rawPayload) {
     debugPrint('Signaling: received incoming call invite: $rawPayload');
-    final payload = (rawPayload['payload'] is Map
+    final payload =
+        (rawPayload['payload'] is Map
             ? (rawPayload['payload'] as Map).cast<String, dynamic>()
             : null) ??
         rawPayload;
@@ -493,17 +649,24 @@ class CallSignalingService {
     final callerId = payload['callerId'] as String?;
     final callerName = (payload['callerName'] as String?) ?? 'Unknown Caller';
     final callerAvatar = payload['callerAvatar'] as String?;
-    final typeStr = (payload['callType'] as String?) ??
+    final typeStr =
+        (payload['callType'] as String?) ??
         (payload['type'] == 'broadcast' ? null : payload['type'] as String?);
 
     if (callId == null || callerId == null) return;
-    if (_lastHandledCallId == callId && Get.currentRoute == AppRoutes.incomingCall) {
+    if (_lastHandledCallId == callId &&
+        Get.currentRoute == AppRoutes.incomingCall) {
       return;
     }
     _lastHandledCallId = callId;
 
-    final type =
-        typeStr == 'video' ? CallType.video : CallType.audio;
+    final type = typeStr == 'video' ? CallType.video : CallType.audio;
+
+    _incomingCallData[callId] = {
+      'callerId': callerId,
+      'callerName': callerName,
+      'callType': type.name,
+    };
 
     final caller = AppUser(
       id: callerId,
@@ -526,26 +689,20 @@ class CallSignalingService {
       return;
     }
 
-    callCtrl.setupIncomingCall(
-      caller: caller,
-      type: type,
-      callId: callId,
-    );
+    callCtrl.setupIncomingCall(caller: caller, type: type, callId: callId);
 
-    // Trigger full screen CallKit locked UI
-    showCallkitIncoming(
-      callId: callId,
-      callerName: caller.name,
-      callerAvatar: caller.avatarUrl,
-      callerId: caller.id,
-      callType: type.name,
-    );
-
-    // Also trigger native heads-up notification and screen wake-up
-    wakeAndNotifyIncoming(
-      callerName: caller.name,
-      callType: type.name,
-    );
+    // Android's native foreground listener presents the locked-screen UI when
+    // the app is backgrounded. In the foreground, Flutter owns the incoming
+    // screen. iOS always uses native CallKit.
+    if (!Platform.isAndroid) {
+      showCallkitIncoming(
+        callId: callId,
+        callerName: caller.name,
+        callerAvatar: caller.avatarUrl,
+        callerId: caller.id,
+        callType: type.name,
+      );
+    }
 
     // Dismiss any open sheets/dialogs before pushing incoming call view
     if (Get.isBottomSheetOpen == true) {
@@ -555,8 +712,10 @@ class CallSignalingService {
       Get.back();
     }
 
-    // Navigate to incoming call view
-    if (Get.currentRoute != AppRoutes.incomingCall) {
+    // Do not push Flutter UI over the lock screen on Android.
+    if (Platform.isAndroid &&
+        _isAppForeground &&
+        Get.currentRoute != AppRoutes.incomingCall) {
       Get.toNamed(AppRoutes.incomingCall);
     }
   }
@@ -565,6 +724,9 @@ class CallSignalingService {
     _pendingCheckTimer?.cancel();
     _pendingCheckTimer = null;
     _lastHandledCallId = null;
+    await _fcmTokenSubscription?.cancel();
+    _fcmTokenSubscription = null;
+    _pushTokensInitialized = false;
 
     dismissVoipNotification();
     for (final ch in _peerChannels.values) {
@@ -591,5 +753,16 @@ class CallSignalingService {
     _currentUserId = null;
     disableProximitySensor();
     stopForegroundService();
+  }
+}
+
+class _LifecycleObserver with WidgetsBindingObserver {
+  _LifecycleObserver(this.owner);
+
+  final CallSignalingService owner;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    owner._onLifecycleChanged(state);
   }
 }

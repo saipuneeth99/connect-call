@@ -32,8 +32,8 @@ class VoipForegroundService : Service() {
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         const val EXTRA_USER_ID = "EXTRA_USER_ID"
-        private const val PREFS_NAME = "ConnectCallPrefs"
-        private const val PREF_USER_ID = "current_user_id"
+        const val PREFS_NAME = "ConnectCallPrefs"
+        const val PREF_USER_ID = "current_user_id"
 
         private const val SUPABASE_URL = "https://jfklskprlpwouqzhqzuw.supabase.co"
         private const val SUPABASE_ANON_KEY = "sb_publishable_k2AO6RqzZ3jIm_16PyUnCA_-0kgq-lF"
@@ -164,6 +164,15 @@ class VoipForegroundService : Service() {
     }
 
     private fun checkSupabaseForIncomingCalls(userId: String) {
+        val appInForeground = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(MainActivity.PREF_APP_FOREGROUND, false)
+        if (appInForeground) {
+            // The Flutter incoming screen owns presentation while visible.
+            // Native polling resumes automatically as soon as the activity
+            // leaves the foreground.
+            return
+        }
+
         var connection: HttpURLConnection? = null
         try {
             val queryUrl = "$SUPABASE_URL/rest/v1/calls?receiver_id=eq.$userId&status=eq.ringing&order=started_at.desc&limit=1"

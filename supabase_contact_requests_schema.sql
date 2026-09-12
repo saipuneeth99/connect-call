@@ -24,6 +24,8 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_online BOOLEAN DEFAULT false;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP WITH TIME ZONE DEFAULT now();
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT now();
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS voip_token TEXT;
 
 -- ----------------------------------------------------------------------------
 -- 2. CALL HISTORY TABLE (calls)

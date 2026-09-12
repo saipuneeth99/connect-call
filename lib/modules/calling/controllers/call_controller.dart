@@ -1,7 +1,9 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../../../core/errors/error_handler.dart';
 import '../../../data/models/app_user.dart';
 import '../../../data/models/call_status.dart';
@@ -38,6 +40,8 @@ class CallController extends GetxController {
   StreamSubscription<CallStatus>? _statusSubscription;
   StreamSubscription<Map<String, dynamic>>? _signalingReplySub;
   StreamSubscription<Map<String, dynamic>>? _signalingEndSub;
+  bool _acceptInProgress = false;
+  bool _terminateInProgress = false;
 
   Future<void> startOutgoingCall({
     required String receiverId,
@@ -88,12 +92,14 @@ class CallController extends GetxController {
           currentCaller = currentUser;
         }
       }
-      if (currentCaller.id == 'user_current' && Supabase.instance.isInitialized) {
+      if (currentCaller.id == 'user_current' &&
+          Supabase.instance.isInitialized) {
         final supaUser = Supabase.instance.client.auth.currentUser;
         if (supaUser != null) {
           currentCaller = AppUser(
             id: supaUser.id,
-            name: (supaUser.userMetadata?['full_name'] as String?) ??
+            name:
+                (supaUser.userMetadata?['full_name'] as String?) ??
                 supaUser.email?.split('@').first ??
                 'Caller',
             email: supaUser.email ?? '',
@@ -150,8 +156,13 @@ class CallController extends GetxController {
   }
 
   Future<void> acceptCall() async {
+    if (_acceptInProgress || callStatus.value == CallStatus.connected) return;
+    _acceptInProgress = true;
     CallSignalingService.dismissVoipNotification();
-    if (_currentCallId == null) return;
+    if (_currentCallId == null) {
+      _acceptInProgress = false;
+      return;
+    }
 
     try {
       final callerId = remoteUser.value?.id;
@@ -177,10 +188,14 @@ class CallController extends GetxController {
       await _callRepository.acceptCall(_currentCallId!, callType.value);
     } catch (e) {
       errorMessage.value = ErrorHandler.getUserMessage(e);
+    } finally {
+      _acceptInProgress = false;
     }
   }
 
   Future<void> rejectCall() async {
+    if (_terminateInProgress) return;
+    _terminateInProgress = true;
     CallSignalingService.dismissVoipNotification();
     CallSignalingService.disableProximitySensor();
     final callId = _currentCallId;
@@ -205,10 +220,14 @@ class CallController extends GetxController {
     await Future.delayed(const Duration(milliseconds: 500));
     _cleanupSession();
     _popCallScreen();
+    _terminateInProgress = false;
   }
 
   Future<void> endCall() async {
+    if (_terminateInProgress) return;
+    _terminateInProgress = true;
     CallSignalingService.dismissVoipNotification();
+    CallSignalingService.endAllCallkitCalls();
     CallSignalingService.disableProximitySensor();
     final callId = _currentCallId;
     final otherId = remoteUser.value?.id;
@@ -231,6 +250,7 @@ class CallController extends GetxController {
     await Future.delayed(const Duration(milliseconds: 500));
     _cleanupSession();
     _popCallScreen();
+    _terminateInProgress = false;
   }
 
   Future<void> toggleMute() async {
@@ -329,26 +349,31 @@ class CallController extends GetxController {
     if (_currentCallId == null) return;
 
     _statusSubscription?.cancel();
-    _statusSubscription =
-        _callRepository.callStatusStream(_currentCallId!).listen((status) {
-      callStatus.value = status;
+    _statusSubscription = _callRepository
+        .callStatusStream(_currentCallId!)
+        .listen((status) {
+          callStatus.value = status;
 
-      if (status == CallStatus.connected) {
-        _startDurationTimer();
-        if (callType.value == CallType.audio && !isSpeakerOn.value) {
-          CallSignalingService.enableProximitySensor();
-        }
-      }
+          if (status == CallStatus.connected) {
+            if (_currentCallId != null) {
+              CallSignalingService.markCallConnected(_currentCallId!);
+            }
+            _startDurationTimer();
+            if (callType.value == CallType.audio && !isSpeakerOn.value) {
+              CallSignalingService.enableProximitySensor();
+            }
+          }
 
-      if (status.isTerminal) {
-        _stopDurationTimer();
-        CallSignalingService.disableProximitySensor();
-        Future.delayed(const Duration(milliseconds: 600), () {
-          _cleanupSession();
-          _popCallScreen();
+          if (status.isTerminal) {
+            _stopDurationTimer();
+            CallSignalingService.endAllCallkitCalls();
+            CallSignalingService.disableProximitySensor();
+            Future.delayed(const Duration(milliseconds: 600), () {
+              _cleanupSession();
+              _popCallScreen();
+            });
+          }
         });
-      }
-    });
   }
 
   void _startDurationTimer() {
@@ -357,10 +382,14 @@ class CallController extends GetxController {
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_connectedAt != null) {
         final elapsed = DateTime.now().difference(_connectedAt!);
-        final minutes =
-            elapsed.inMinutes.remainder(60).toString().padLeft(2, '0');
-        final seconds =
-            elapsed.inSeconds.remainder(60).toString().padLeft(2, '0');
+        final minutes = elapsed.inMinutes
+            .remainder(60)
+            .toString()
+            .padLeft(2, '0');
+        final seconds = elapsed.inSeconds
+            .remainder(60)
+            .toString()
+            .padLeft(2, '0');
         final hours = elapsed.inHours;
         if (hours > 0) {
           callDuration.value =
@@ -379,17 +408,17 @@ class CallController extends GetxController {
 
   void _listenToSignalingEvents() {
     _signalingReplySub?.cancel();
-    _signalingReplySub =
-        CallSignalingService.instance.onCallReply.listen((payload) {
+    _signalingReplySub = CallSignalingService.instance.onCallReply.listen((
+      payload,
+    ) {
       final callId = payload['callId'] as String?;
       final status = payload['status'] as String?;
       if (callId == _currentCallId) {
         if (status == 'accepted') {
-          callStatus.value = CallStatus.connected;
-          _startDurationTimer();
-          if (callType.value == CallType.audio && !isSpeakerOn.value) {
-            CallSignalingService.enableProximitySensor();
-          }
+          // The remote accepted the call, but media is not connected yet.
+          // LiveKit will move both sides to connected after a participant
+          // actually joins the room.
+          callStatus.value = CallStatus.connecting;
         } else if (status == 'rejected') {
           callStatus.value = CallStatus.rejected;
           _stopDurationTimer();
@@ -411,8 +440,9 @@ class CallController extends GetxController {
     });
 
     _signalingEndSub?.cancel();
-    _signalingEndSub =
-        CallSignalingService.instance.onCallEnded.listen((payload) async {
+    _signalingEndSub = CallSignalingService.instance.onCallEnded.listen((
+      payload,
+    ) async {
       final callId = payload['callId'] as String?;
       if (callId == _currentCallId) {
         callStatus.value = CallStatus.ended;

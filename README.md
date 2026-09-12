@@ -7,7 +7,7 @@ A production-quality Flutter 1-to-1 audio/video calling application built with c
 ![Flutter](https://img.shields.io/badge/Flutter-3.x-blue)
 ![Dart](https://img.shields.io/badge/Dart-3.x-blue)
 ![GetX](https://img.shields.io/badge/State-GetX-purple)
-![Status](https://img.shields.io/badge/Phase-Mock%20Services-green)
+![Status](https://img.shields.io/badge/Phase-Backend%20Integrated-green)
 
 ## Features
 
@@ -46,7 +46,7 @@ Repository
     |
 Service Interface (abstract class)
     |
-Mock Implementation  <-->  Future: Firebase / Supabase / LiveKit
+    Mock Implementation  <-->  Firebase / Supabase / LiveKit
 ```
 
 **Key principle:** The UI never touches backend logic. Swapping MockAuthService to FirebaseAuthService requires zero UI changes.
@@ -98,7 +98,8 @@ Controllers: AuthController, HomeController, ContactsController, ProfileControll
 
 ## Mock Services
 
-The current version uses mock services. Firebase, Supabase and LiveKit integration will be added in the backend integration phase.
+The test suite keeps mock services for deterministic tests. The runtime binding
+uses Firebase, Supabase, and LiveKit when those services are initialized.
 
 ### Demo Account
 - Email: demo@connectcall.app
@@ -127,23 +128,49 @@ flutter run
 | get | State management, DI, routing |
 | intl | Date/time formatting |
 
-## Future Backend Integration
+## Backend Integration
 
-| Service | Mock | Future |
+| Service | Test double | Production |
 |---------|------|--------|
 | Authentication | MockAuthService | FirebaseAuthService |
 | Users | MockUserService | SupabaseUserService |
 | Calling | MockCallingService | LiveKitCallingService |
 | Storage | MockStorageService | SupabaseStorageService |
 
-Integration requires only swapping service registrations in InitialBinding. No UI changes needed.
+The production binding uses Firebase Auth, Supabase, and LiveKit. Run
+`supabase_full_schema.sql` in Supabase before testing real calls. The schema
+also stores `fcm_token` and `voip_token` for background call delivery.
 
-## Known Limitations
+### Background and locked-screen calls
 
-- No real audio/video streaming (mock placeholders)
-- No push notifications
-- No real backend connectivity
-- Mock permission grants (always granted)
-- No persistent storage (in-memory only)
+- Android uses the native foreground listener and full-screen call notification
+  while the app is backgrounded or the phone is locked. Android 13+ notification
+  permission and Android 14+ full-screen intent permission must be allowed.
+- iOS uses PushKit and CallKit. Realtime channels can handle calls while the app
+  is alive, but they cannot wake a terminated iPhone. Your call backend must send
+  a real APNs VoIP push to the saved `voip_token` with `callId`, `callerId`,
+  `callerName`, and `callType` (`audio` or `video`).
+- Android can use the saved `fcm_token` for a data-only FCM fallback. The data
+  payload uses the same fields. The app displays the native call surface first;
+  the Flutter call screen opens after Answer.
 
-These will be addressed in the backend integration phase.
+To enable Android wake-up delivery, deploy the included edge function and add
+the Firebase service-account JSON as a Supabase secret:
+
+```bash
+supabase functions deploy send-call-notification --no-verify-jwt
+supabase secrets set FIREBASE_PROJECT_ID=intern-636c3 \
+  FIREBASE_SERVICE_ACCOUNT_JSON='<firebase-service-account-json>'
+```
+
+Without this deployment, the app can only receive calls through Realtime or the
+native polling fallback, neither of which is guaranteed after Android suspends
+or kills the app.
+
+## Remaining deployment requirements
+
+- Configure APNs VoIP capability and a server-side APNs provider for iOS.
+- Configure Firebase Cloud Messaging server delivery if Android FCM fallback is
+  desired.
+- Test locked-screen behavior on physical devices; iOS simulators do not model
+  real PushKit delivery or the lock screen.

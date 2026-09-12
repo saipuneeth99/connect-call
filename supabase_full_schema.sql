@@ -24,6 +24,8 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_online BOOLEAN DEFAULT false;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP WITH TIME ZONE DEFAULT now();
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT now();
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS voip_token TEXT;
 
 -- ----------------------------------------------------------------------------
 -- 2. CALL HISTORY TABLE (calls)
@@ -35,8 +37,9 @@ CREATE TABLE IF NOT EXISTS public.calls (
   receiver_id TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   receiver_name TEXT,
   type TEXT NOT NULL,                      -- 'audio' or 'video'
-  status TEXT NOT NULL,                    -- 'ended', 'rejected', 'missed', 'busy', 'completed'
+  status TEXT NOT NULL,                    -- 'calling', 'ringing', 'connecting', 'connected', 'ended', 'rejected', 'missed', 'busy', 'failed'
   started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+  answered_at TIMESTAMP WITH TIME ZONE,
   ended_at TIMESTAMP WITH TIME ZONE,
   duration_seconds INTEGER DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
@@ -48,6 +51,7 @@ ALTER TABLE public.calls ADD COLUMN IF NOT EXISTS receiver_name TEXT;
 ALTER TABLE public.calls ADD COLUMN IF NOT EXISTS type TEXT;
 ALTER TABLE public.calls ADD COLUMN IF NOT EXISTS status TEXT;
 ALTER TABLE public.calls ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE DEFAULT now();
+ALTER TABLE public.calls ADD COLUMN IF NOT EXISTS answered_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE public.calls ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE public.calls ADD COLUMN IF NOT EXISTS duration_seconds INTEGER DEFAULT 0;
 ALTER TABLE public.calls ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT now();
@@ -81,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_users_name ON public.users(name);
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON public.calls(caller_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_receiver ON public.calls(receiver_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_started_at ON public.calls(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_calls_active_receiver ON public.calls(receiver_id, status, started_at DESC);
 
 -- Contact requests: fast lookup for incoming, sent, and active contacts
 CREATE INDEX IF NOT EXISTS idx_contact_requests_sender ON public.contact_requests(sender_id);

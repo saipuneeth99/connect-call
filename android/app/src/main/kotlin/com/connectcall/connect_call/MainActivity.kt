@@ -22,6 +22,8 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "com.connectcall.connect_call/voip"
+        const val PREFS_NAME = "ConnectCallPrefs"
+        const val PREF_APP_FOREGROUND = "app_in_foreground"
         private var methodChannel: MethodChannel? = null
         private var activeInstance: MainActivity? = null
 
@@ -58,6 +60,23 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        setAppForeground(true)
+    }
+
+    override fun onStop() {
+        setAppForeground(false)
+        super.onStop()
+    }
+
+    private fun setAppForeground(isForeground: Boolean) {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PREF_APP_FOREGROUND, isForeground)
+            .apply()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -75,6 +94,11 @@ class MainActivity : FlutterActivity() {
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).apply {
             setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "setAppInForeground" -> {
+                        val isForeground = call.argument<Boolean>("isForeground") ?: true
+                        setAppForeground(isForeground)
+                        result.success(true)
+                    }
                     "wakeUpScreen" -> {
                         wakeUpScreen()
                         result.success(true)
