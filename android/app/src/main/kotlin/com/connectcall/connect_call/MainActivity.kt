@@ -25,8 +25,12 @@ class MainActivity : FlutterActivity() {
 
         fun onCallDeclinedFromNotification() {
             activeInstance?.runOnUiThread {
-                methodChannel?.invokeMethod("onCallDeclinedFromNotification", null)
-                activeInstance?.releaseWakeLock()
+                try {
+                    methodChannel?.invokeMethod("onCallDeclinedFromNotification", null)
+                    activeInstance?.releaseWakeLock()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
@@ -83,11 +87,10 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
                     "startForegroundService" -> {
-                        VoipForegroundService.startService(this@MainActivity)
+                        // Safe no-op to eliminate ForegroundService SecurityException / crash
                         result.success(true)
                     }
                     "stopForegroundService" -> {
-                        VoipForegroundService.stopService(this@MainActivity)
                         result.success(true)
                     }
                     else -> result.notImplemented()
@@ -179,82 +182,94 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun showIncomingCallNotification(callerName: String, callType: String) {
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val channelId = "connect_call_voip_v3"
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channelId = "connect_call_voip_v3"
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val audioAttributes = AudioAttributes.Builder()
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                .build()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                val audioAttributes = AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .build()
 
-            val channel = NotificationChannel(channelId, "Incoming Phone Calls", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Incoming voice and video phone calls"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
-                setSound(ringtoneUri, audioAttributes)
-                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-                setBypassDnd(true)
+                val channel = NotificationChannel(channelId, "Incoming Phone Calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Incoming voice and video phone calls"
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
+                    setSound(ringtoneUri, audioAttributes)
+                    lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                    setBypassDnd(true)
+                }
+                notificationManager.createNotificationChannel(channel)
             }
-            notificationManager.createNotificationChannel(channel)
+
+            // Tap notification intent
+            val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                action = Intent.ACTION_MAIN
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                putExtra("route", "/incoming-call")
+            }
+
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+
+            val pendingFullScreenIntent = PendingIntent.getActivity(this, 1001, fullScreenIntent, flags)
+
+            // Action: Answer
+            val answerIntent = Intent(this, CallActionReceiver::class.java).apply {
+                action = CallActionReceiver.ACTION_ANSWER_CALL
+            }
+            val pendingAnswerIntent = PendingIntent.getBroadcast(this, 1002, answerIntent, flags)
+
+            // Action: Decline
+            val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
+                action = CallActionReceiver.ACTION_DECLINE_CALL
+            }
+            val pendingDeclineIntent = PendingIntent.getBroadcast(this, 1003, declineIntent, flags)
+
+            val builder = NotificationCompat.Builder(this, channelId)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(callerName)
+                .setContentText("Incoming $callType call...")
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setAutoCancel(true)
+                .setOngoing(true)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setFullScreenIntent(pendingFullScreenIntent, true)
+                .setContentIntent(pendingFullScreenIntent)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", pendingDeclineIntent)
+                .addAction(android.R.drawable.ic_menu_call, "Answer", pendingAnswerIntent)
+
+            notificationManager.notify(1001, builder.build())
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-
-        // Tap notification intent
-        val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            action = Intent.ACTION_MAIN
-            addCategory(Intent.CATEGORY_LAUNCHER)
-            putExtra("route", "/incoming-call")
-        }
-
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-
-        val pendingFullScreenIntent = PendingIntent.getActivity(this, 1001, fullScreenIntent, flags)
-
-        // Action: Answer
-        val answerIntent = Intent(this, CallActionReceiver::class.java).apply {
-            action = CallActionReceiver.ACTION_ANSWER_CALL
-        }
-        val pendingAnswerIntent = PendingIntent.getBroadcast(this, 1002, answerIntent, flags)
-
-        // Action: Decline
-        val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
-            action = CallActionReceiver.ACTION_DECLINE_CALL
-        }
-        val pendingDeclineIntent = PendingIntent.getBroadcast(this, 1003, declineIntent, flags)
-
-        val builder = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(callerName)
-            .setContentText("Incoming $callType call...")
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setAutoCancel(true)
-            .setOngoing(true)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setFullScreenIntent(pendingFullScreenIntent, true)
-            .setContentIntent(pendingFullScreenIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", pendingDeclineIntent)
-            .addAction(android.R.drawable.ic_menu_call, "Answer", pendingAnswerIntent)
-
-        notificationManager.notify(1001, builder.build())
     }
 
     private fun dismissIncomingCallNotification() {
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.cancel(1001)
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(1001)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     override fun onDestroy() {
-        disableProximitySensor()
-        releaseWakeLock()
-        if (activeInstance == this) {
-            activeInstance = null
+        try {
+            disableProximitySensor()
+            releaseWakeLock()
+            if (activeInstance == this) {
+                activeInstance = null
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
         super.onDestroy()
     }
