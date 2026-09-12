@@ -203,6 +203,20 @@ class CallSignalingService {
             Get.find<CallController>().rejectCall();
           }
         } catch (_) {}
+      } else if (call.method == 'onCallAcceptedFromNotification') {
+        debugPrint('Signaling: call accepted from notification');
+        try {
+          if (Get.isRegistered<CallController>()) {
+            Get.find<CallController>().acceptCall();
+          }
+        } catch (_) {}
+      } else if (call.method == 'navigateToIncomingCall') {
+        debugPrint('Signaling: navigateToIncomingCall from native notification');
+        if (Get.currentRoute != AppRoutes.incomingCall &&
+            Get.currentRoute != AppRoutes.audioCall &&
+            Get.currentRoute != AppRoutes.videoCall) {
+          Get.toNamed(AppRoutes.incomingCall);
+        }
       }
     });
   }
@@ -492,7 +506,7 @@ class CallSignalingService {
       if (!Supabase.instance.isInitialized) return;
       final threshold = DateTime.now()
           .toUtc()
-          .subtract(const Duration(seconds: 40))
+          .subtract(const Duration(seconds: 120))
           .toIso8601String();
 
       final res = await Supabase.instance.client
@@ -570,26 +584,6 @@ class CallSignalingService {
         },
       );
       debugPrint('Signaling: sent call_invite to user_signaling_$receiverId');
-
-      // Realtime reaches a live app, but it cannot wake a terminated Android
-      // process. The edge function sends a high-priority FCM data message to
-      // the receiver's saved device token. Failure is non-fatal because the
-      // realtime/native polling paths may still deliver the call.
-      try {
-        await Supabase.instance.client.functions.invoke(
-          'send-call-notification',
-          body: {
-            'receiverId': receiverId,
-            'callId': callId,
-            'callerId': caller.id,
-            'callerName': caller.name,
-            'callerAvatar': caller.avatarUrl,
-            'callType': type.name,
-          },
-        );
-      } catch (e) {
-        debugPrint('Signaling: push notification unavailable: $e');
-      }
     } catch (e) {
       debugPrint('CallSignalingService sendInvite error: $e');
     }
@@ -691,20 +685,22 @@ class CallSignalingService {
 
     callCtrl.setupIncomingCall(caller: caller, type: type, callId: callId);
 
-    // Android's native foreground listener presents the locked-screen UI when
-    // the app is backgrounded. In the foreground, Flutter owns the incoming
-    // screen. iOS always uses native CallKit.
-    if (!Platform.isAndroid) {
-      showCallkitIncoming(
-        callId: callId,
-        callerName: caller.name,
-        callerAvatar: caller.avatarUrl,
-        callerId: caller.id,
-        callType: type.name,
-      );
-    }
+    // 1. Always wake up the screen and show native high-priority heads up notification
+    wakeAndNotifyIncoming(
+      callerName: caller.name,
+      callType: type.name,
+    );
 
-    // Dismiss any open sheets/dialogs before pushing incoming call view
+    // 2. Always trigger native CallKit incoming call UI (rings with real phone ringtone on lockscreen)
+    showCallkitIncoming(
+      callId: callId,
+      callerName: caller.name,
+      callerAvatar: caller.avatarUrl,
+      callerId: caller.id,
+      callType: type.name,
+    );
+
+    // 3. Dismiss any open sheets/dialogs before pushing incoming call view
     if (Get.isBottomSheetOpen == true) {
       Get.back();
     }
@@ -712,10 +708,10 @@ class CallSignalingService {
       Get.back();
     }
 
-    // Do not push Flutter UI over the lock screen on Android.
-    if (Platform.isAndroid &&
-        _isAppForeground &&
-        Get.currentRoute != AppRoutes.incomingCall) {
+    // 4. Navigate to incoming call view
+    if (Get.currentRoute != AppRoutes.incomingCall &&
+        Get.currentRoute != AppRoutes.audioCall &&
+        Get.currentRoute != AppRoutes.videoCall) {
       Get.toNamed(AppRoutes.incomingCall);
     }
   }

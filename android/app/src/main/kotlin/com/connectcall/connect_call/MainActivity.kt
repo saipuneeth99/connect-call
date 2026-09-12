@@ -58,6 +58,7 @@ class MainActivity : FlutterActivity() {
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
             )
         }
+        handleIntent(intent)
     }
 
     override fun onStart() {
@@ -80,11 +81,29 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
             val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
             keyguardManager?.requestDismissKeyguard(this, null)
+        }
+        val autoAccept = intent.getBooleanExtra("auto_accept", false)
+        val route = intent.getStringExtra("route")
+        runOnUiThread {
+            try {
+                if (autoAccept) {
+                    methodChannel?.invokeMethod("onCallAcceptedFromNotification", null)
+                } else if (route == "/incoming-call") {
+                    methodChannel?.invokeMethod("navigateToIncomingCall", null)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 

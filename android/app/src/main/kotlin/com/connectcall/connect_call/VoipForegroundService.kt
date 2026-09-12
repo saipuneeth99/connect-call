@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -164,15 +166,6 @@ class VoipForegroundService : Service() {
     }
 
     private fun checkSupabaseForIncomingCalls(userId: String) {
-        val appInForeground = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(MainActivity.PREF_APP_FOREGROUND, false)
-        if (appInForeground) {
-            // The Flutter incoming screen owns presentation while visible.
-            // Native polling resumes automatically as soon as the activity
-            // leaves the foreground.
-            return
-        }
-
         var connection: HttpURLConnection? = null
         try {
             val queryUrl = "$SUPABASE_URL/rest/v1/calls?receiver_id=eq.$userId&status=eq.ringing&order=started_at.desc&limit=1"
@@ -236,7 +229,7 @@ class VoipForegroundService : Service() {
                 sdf.parse(startedAtStr.substring(0, 19))?.time ?: System.currentTimeMillis()
             }
             val age = System.currentTimeMillis() - timeMs
-            age in -15000..45000
+            age in -30000..120000
         } catch (e: Exception) {
             true
         }
@@ -257,7 +250,70 @@ class VoipForegroundService : Service() {
                 acquire(30000)
             }
 
-            // 2. Build CallKit parameter bundle
+            // 2. Build full-screen high-priority notification with system ringtone
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channelId = "connect_call_voip_v3"
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                val audioAttributes = AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .build()
+
+                val channel = NotificationChannel(channelId, "Incoming Phone Calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Incoming voice and video phone calls"
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
+                    setSound(ringtoneUri, audioAttributes)
+                    lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                    setBypassDnd(true)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                action = Intent.ACTION_MAIN
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                putExtra("route", "/incoming-call")
+            }
+
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+
+            val pendingFullScreenIntent = PendingIntent.getActivity(this, 1001, fullScreenIntent, flags)
+
+            val answerIntent = Intent(this, CallActionReceiver::class.java).apply {
+                action = CallActionReceiver.ACTION_ANSWER_CALL
+            }
+            val pendingAnswerIntent = PendingIntent.getBroadcast(this, 1002, answerIntent, flags)
+
+            val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
+                action = CallActionReceiver.ACTION_DECLINE_CALL
+            }
+            val pendingDeclineIntent = PendingIntent.getBroadcast(this, 1003, declineIntent, flags)
+
+            val builder = NotificationCompat.Builder(this, channelId)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(callerName)
+                .setContentText("Incoming $callType call...")
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setAutoCancel(true)
+                .setOngoing(true)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setFullScreenIntent(pendingFullScreenIntent, true)
+                .setContentIntent(pendingFullScreenIntent)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", pendingDeclineIntent)
+                .addAction(android.R.drawable.ic_menu_call, "Answer", pendingAnswerIntent)
+
+            notificationManager.notify(1001, builder.build())
+
+            // 3. Build CallKit parameter bundle
             val bundle = Bundle().apply {
                 putString(CallkitConstants.EXTRA_CALLKIT_ID, callId)
                 putString(CallkitConstants.EXTRA_CALLKIT_NAME_CALLER, callerName)
@@ -283,17 +339,23 @@ class VoipForegroundService : Service() {
                 putSerializable(CallkitConstants.EXTRA_CALLKIT_EXTRA, extraMap)
             }
 
-            // 3. Broadcast to CallkitIncomingBroadcastReceiver to trigger sound, vibration, and locked notification
+            // 4. Broadcast to CallkitIncomingBroadcastReceiver to trigger sound, vibration, and locked notification
             val incomingBroadcastIntent = CallkitIncomingBroadcastReceiver.getIntentIncoming(this, bundle)
             sendBroadcast(incomingBroadcastIntent)
 
-            // 4. Also launch CallkitIncomingActivity directly to pop up over lockscreen immediately
-            val activityIntent = CallkitIncomingActivity.getIntent(this, bundle).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+            // 5. Also launch CallkitIncomingActivity directly to pop up over lockscreen immediately
+            try {
+                val activityIntent = CallkitIncomingActivity.getIntent(this, bundle).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                }
+                startActivity(activityIntent)
+            } catch (e: Exception) {
+                // Background activity launch may be restricted; fullscreen intent notification handles it
             }
-            startActivity(activityIntent)
         } catch (e: Exception) {
             Log.e(TAG, "Error triggering incoming call", e)
         }
@@ -306,6 +368,9 @@ class VoipForegroundService : Service() {
             }
             val endedIntent = CallkitIncomingBroadcastReceiver.getIntentEnded(this, bundle)
             sendBroadcast(endedIntent)
+
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(1001)
         } catch (e: Exception) {
             Log.e(TAG, "Error dismissing callkit", e)
         }
