@@ -99,13 +99,40 @@ class MainActivity : FlutterActivity() {
                         disableProximitySensor()
                         result.success(true)
                     }
+                    "setUserId" -> {
+                        val userId = call.argument<String>("userId")
+                        val prefs = getSharedPreferences("ConnectCallPrefs", Context.MODE_PRIVATE)
+                        prefs.edit().putString("current_user_id", userId).apply()
+                        if (!userId.isNullOrEmpty()) {
+                            VoipForegroundService.startService(this@MainActivity, userId)
+                        }
+                        result.success(true)
+                    }
                     "startForegroundService" -> {
-                        VoipForegroundService.startService(this@MainActivity)
+                        val userId = call.argument<String>("userId")
+                        VoipForegroundService.startService(this@MainActivity, userId)
                         result.success(true)
                     }
                     "stopForegroundService" -> {
                         VoipForegroundService.stopService(this@MainActivity)
                         result.success(true)
+                    }
+                    "requestOverlayPermission" -> {
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                if (!Settings.canDrawOverlays(this@MainActivity)) {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:$packageName")
+                                    )
+                                    startActivity(intent)
+                                }
+                            }
+                            result.success(true)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            result.success(false)
+                        }
                     }
                     "requestIgnoreBatteryOptimizations" -> {
                         try {

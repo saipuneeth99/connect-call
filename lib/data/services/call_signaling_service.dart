@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_callkit_incoming/entities/entities.dart';
+import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:get/get.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../app/routes/app_routes.dart';
@@ -29,6 +31,63 @@ class CallSignalingService {
   static Future<void> dismissVoipNotification() async {
     try {
       await _voipChannel.invokeMethod('dismissIncomingCall');
+      await endAllCallkitCalls();
+    } catch (_) {}
+  }
+
+  static Future<void> showCallkitIncoming({
+    required String callId,
+    required String callerName,
+    String? callerAvatar,
+    required String callerId,
+    required String callType,
+  }) async {
+    try {
+      final params = CallKitParams(
+        id: callId,
+        nameCaller: callerName,
+        appName: 'ConnectCall',
+        avatar: callerAvatar,
+        handle: callerName,
+        type: callType == 'video' ? 1 : 0,
+        duration: 45000,
+        missedCallNotification: const NotificationParams(
+          showNotification: true,
+          isShowCallback: false,
+          subtitle: 'Missed Call',
+          callbackText: 'Call Back',
+        ),
+        extra: <String, dynamic>{
+          'callId': callId,
+          'callerId': callerId,
+          'callerName': callerName,
+          'callerAvatar': callerAvatar,
+          'callType': callType,
+        },
+        android: const AndroidParams(
+          isCustomNotification: true,
+          isShowLogo: false,
+          ringtonePath: 'system_ringtone_default',
+          backgroundColor: '#0F141C',
+          actionColor: '#10B981',
+          textColor: '#FFFFFF',
+          isShowFullLockedScreen: true,
+          isImportant: true,
+          isFullScreen: true,
+          textAccept: 'Answer',
+          textDecline: 'Decline',
+        ),
+      );
+      await FlutterCallkitIncoming.showCallkitIncoming(params);
+      debugPrint('FlutterCallkitIncoming.showCallkitIncoming triggered for $callId');
+    } catch (e) {
+      debugPrint('showCallkitIncoming error: $e');
+    }
+  }
+
+  static Future<void> endAllCallkitCalls() async {
+    try {
+      await FlutterCallkitIncoming.endAllCalls();
     } catch (_) {}
   }
 
@@ -50,15 +109,24 @@ class CallSignalingService {
     }
   }
 
-  static Future<void> startForegroundService() async {
+  static Future<void> startForegroundService([String? userId]) async {
     try {
-      await _voipChannel.invokeMethod('startForegroundService');
+      if (userId != null && userId.isNotEmpty) {
+        await _voipChannel.invokeMethod('setUserId', {'userId': userId});
+      }
+      await _voipChannel.invokeMethod('startForegroundService', {'userId': userId});
     } catch (_) {}
   }
 
   static Future<void> stopForegroundService() async {
     try {
       await _voipChannel.invokeMethod('stopForegroundService');
+    } catch (_) {}
+  }
+
+  static Future<void> requestOverlayPermission() async {
+    try {
+      await _voipChannel.invokeMethod('requestOverlayPermission');
     } catch (_) {}
   }
 
@@ -74,6 +142,7 @@ class CallSignalingService {
 
   CallSignalingService._() {
     _setupMethodCallHandler();
+    _setupCallkitListener();
   }
 
   void _setupMethodCallHandler() {
@@ -85,6 +154,90 @@ class CallSignalingService {
             Get.find<CallController>().rejectCall();
           }
         } catch (_) {}
+      }
+    });
+  }
+
+  StreamSubscription? _callkitSubscription;
+
+  void _setupCallkitListener() {
+    _callkitSubscription?.cancel();
+    _callkitSubscription = FlutterCallkitIncoming.onEvent.listen((CallEvent? event) async {
+      if (event == null) return;
+      debugPrint('CallKit event received: ${event.eventName}');
+
+      switch (event) {
+        case CallEventActionCallAccept(:final callKitParams):
+          final extra = callKitParams.extra ?? {};
+          final callId = (extra['callId'] as String?) ?? callKitParams.id;
+          final callerId = extra['callerId'] as String?;
+          final callerName = (extra['callerName'] as String?) ?? callKitParams.nameCaller ?? 'Incoming Call';
+          final callTypeStr = (extra['callType'] as String?) ?? 'audio';
+          final callType = callTypeStr == 'video' ? CallType.video : CallType.audio;
+
+          debugPrint('CallKit: Call accepted for $callId');
+          dismissVoipNotification();
+          CallingBinding().dependencies();
+          final callCtrl = Get.find<CallController>();
+          callCtrl.setupIncomingCall(
+            caller: AppUser(
+              id: callerId ?? 'caller',
+              name: callerName,
+              email: '',
+              isOnline: true,
+            ),
+            type: callType,
+            callId: callId,
+          );
+          await callCtrl.acceptCall();
+          if (Get.currentRoute != AppRoutes.audioCall &&
+              Get.currentRoute != AppRoutes.videoCall) {
+            if (callType == CallType.video) {
+              Get.toNamed(AppRoutes.videoCall);
+            } else {
+              Get.toNamed(AppRoutes.audioCall);
+            }
+          }
+          break;
+
+        case CallEventActionCallDecline(:final callKitParams):
+          final extra = callKitParams.extra ?? {};
+          final callId = (extra['callId'] as String?) ?? callKitParams.id;
+          final callerId = extra['callerId'] as String?;
+
+          debugPrint('CallKit: Call declined for $callId');
+          dismissVoipNotification();
+          if (callerId != null && callId.isNotEmpty) {
+            sendReply(callerId: callerId, callId: callId, status: 'rejected');
+            try {
+              if (Supabase.instance.isInitialized) {
+                await Supabase.instance.client.from('calls').update({
+                  'status': 'rejected',
+                  'ended_at': DateTime.now().toIso8601String(),
+                }).eq('id', callId);
+              }
+            } catch (_) {}
+          }
+          if (Get.isRegistered<CallController>()) {
+            Get.find<CallController>().rejectCall();
+          }
+          break;
+
+        case CallEventActionCallTimeout(:final id):
+          debugPrint('CallKit: Call timeout for $id');
+          dismissVoipNotification();
+          break;
+
+        case CallEventActionCallEnded():
+          debugPrint('CallKit: Call ended');
+          dismissVoipNotification();
+          if (Get.isRegistered<CallController>()) {
+            Get.find<CallController>().endCall();
+          }
+          break;
+
+        default:
+          break;
       }
     });
   }
@@ -113,9 +266,11 @@ class CallSignalingService {
     await dispose();
     _currentUserId = userId;
 
-    // Start background keep-alive service and ask for battery optimization exemption
-    startForegroundService();
+    // Start background keep-alive service, overlay permission, and battery optimization exemption
+    startForegroundService(userId);
     requestIgnoreBatteryOptimizations();
+    requestOverlayPermission();
+    _setupCallkitListener();
 
     try {
       if (!Supabase.instance.isInitialized) return;
@@ -154,6 +309,7 @@ class CallSignalingService {
                   : null) ??
               rawPayload;
           debugPrint('Signaling: received call_ended: $payload');
+          dismissVoipNotification();
           Future.microtask(() => _endController.add(payload));
         },
       );
@@ -183,7 +339,7 @@ class CallSignalingService {
 
       // 3. Fast periodic check for calls inserted while phone was sleeping / transitioning
       _pendingCheckTimer?.cancel();
-      _pendingCheckTimer = Timer.periodic(const Duration(milliseconds: 2500), (_) {
+      _pendingCheckTimer = Timer.periodic(const Duration(milliseconds: 2000), (_) {
         _checkPendingCalls();
       });
       _checkPendingCalls();
@@ -376,7 +532,16 @@ class CallSignalingService {
       callId: callId,
     );
 
-    // Trigger full screen notification, screen wake-up, and bring activity to front
+    // Trigger full screen CallKit locked UI
+    showCallkitIncoming(
+      callId: callId,
+      callerName: caller.name,
+      callerAvatar: caller.avatarUrl,
+      callerId: caller.id,
+      callType: type.name,
+    );
+
+    // Also trigger native heads-up notification and screen wake-up
     wakeAndNotifyIncoming(
       callerName: caller.name,
       callType: type.name,
