@@ -170,6 +170,10 @@ class CallController extends GetxController {
         Get.offNamed(AppRoutes.audioCall);
       }
 
+      if (callType.value == CallType.audio && !isSpeakerOn.value) {
+        CallSignalingService.enableProximitySensor();
+      }
+
       await _callRepository.acceptCall(_currentCallId!, callType.value);
     } catch (e) {
       errorMessage.value = ErrorHandler.getUserMessage(e);
@@ -178,6 +182,7 @@ class CallController extends GetxController {
 
   Future<void> rejectCall() async {
     CallSignalingService.dismissVoipNotification();
+    CallSignalingService.disableProximitySensor();
     final callId = _currentCallId;
     final callerId = remoteUser.value?.id;
     callStatus.value = CallStatus.rejected;
@@ -204,6 +209,7 @@ class CallController extends GetxController {
 
   Future<void> endCall() async {
     CallSignalingService.dismissVoipNotification();
+    CallSignalingService.disableProximitySensor();
     final callId = _currentCallId;
     final otherId = remoteUser.value?.id;
     callStatus.value = CallStatus.ended;
@@ -242,6 +248,14 @@ class CallController extends GetxController {
     try {
       await _callRepository.toggleSpeaker(_currentCallId!);
       isSpeakerOn.value = !isSpeakerOn.value;
+      if (callType.value == CallType.audio &&
+          callStatus.value == CallStatus.connected) {
+        if (isSpeakerOn.value) {
+          CallSignalingService.disableProximitySensor();
+        } else {
+          CallSignalingService.enableProximitySensor();
+        }
+      }
     } catch (e) {
       debugPrint('toggleSpeaker error: $e');
     }
@@ -283,6 +297,7 @@ class CallController extends GetxController {
     if (callType.value == CallType.video) return;
     callType.value = CallType.video;
     isCameraOn.value = true;
+    CallSignalingService.disableProximitySensor();
     if (_currentCallId != null) {
       try {
         await _callRepository.toggleCamera(_currentCallId!);
@@ -297,6 +312,9 @@ class CallController extends GetxController {
     if (callType.value == CallType.audio) return;
     callType.value = CallType.audio;
     isCameraOn.value = false;
+    if (!isSpeakerOn.value && callStatus.value == CallStatus.connected) {
+      CallSignalingService.enableProximitySensor();
+    }
     if (_currentCallId != null) {
       try {
         await _callRepository.toggleCamera(_currentCallId!);
@@ -317,10 +335,14 @@ class CallController extends GetxController {
 
       if (status == CallStatus.connected) {
         _startDurationTimer();
+        if (callType.value == CallType.audio && !isSpeakerOn.value) {
+          CallSignalingService.enableProximitySensor();
+        }
       }
 
       if (status.isTerminal) {
         _stopDurationTimer();
+        CallSignalingService.disableProximitySensor();
         Future.delayed(const Duration(milliseconds: 600), () {
           _cleanupSession();
           _popCallScreen();
@@ -365,9 +387,13 @@ class CallController extends GetxController {
         if (status == 'accepted') {
           callStatus.value = CallStatus.connected;
           _startDurationTimer();
+          if (callType.value == CallType.audio && !isSpeakerOn.value) {
+            CallSignalingService.enableProximitySensor();
+          }
         } else if (status == 'rejected') {
           callStatus.value = CallStatus.rejected;
           _stopDurationTimer();
+          CallSignalingService.disableProximitySensor();
           Future.delayed(const Duration(milliseconds: 600), () {
             _cleanupSession();
             _popCallScreen();
@@ -375,6 +401,7 @@ class CallController extends GetxController {
         } else if (status == 'busy') {
           errorMessage.value = 'User is busy on another call';
           callStatus.value = CallStatus.failed;
+          CallSignalingService.disableProximitySensor();
           Future.delayed(const Duration(milliseconds: 1500), () {
             _cleanupSession();
             _popCallScreen();
@@ -385,21 +412,27 @@ class CallController extends GetxController {
 
     _signalingEndSub?.cancel();
     _signalingEndSub =
-        CallSignalingService.instance.onCallEnded.listen((payload) {
+        CallSignalingService.instance.onCallEnded.listen((payload) async {
       final callId = payload['callId'] as String?;
       if (callId == _currentCallId) {
         callStatus.value = CallStatus.ended;
         _stopDurationTimer();
-        Future.delayed(const Duration(milliseconds: 600), () {
-          _cleanupSession();
-          _popCallScreen();
-        });
+        CallSignalingService.disableProximitySensor();
+        if (callId != null) {
+          try {
+            await _callRepository.endCall(callId);
+          } catch (_) {}
+        }
+        await Future.delayed(const Duration(milliseconds: 600));
+        _cleanupSession();
+        _popCallScreen();
       }
     });
   }
 
   void _cleanupSession() {
     CallSignalingService.dismissVoipNotification();
+    CallSignalingService.disableProximitySensor();
     _stopDurationTimer();
     _statusSubscription?.cancel();
     _statusSubscription = null;

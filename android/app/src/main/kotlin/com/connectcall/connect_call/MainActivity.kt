@@ -9,6 +9,7 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.Bundle
 import android.os.PowerManager
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
@@ -17,31 +18,117 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
-    private val CHANNEL = "com.connectcall.connect_call/voip"
+    companion object {
+        private const val CHANNEL = "com.connectcall.connect_call/voip"
+        private var methodChannel: MethodChannel? = null
+        private var activeInstance: MainActivity? = null
+
+        fun onCallDeclinedFromNotification() {
+            activeInstance?.runOnUiThread {
+                methodChannel?.invokeMethod("onCallDeclinedFromNotification", null)
+                activeInstance?.releaseWakeLock()
+            }
+        }
+    }
+
     private var wakeLock: PowerManager.WakeLock? = null
+    private var proximityWakeLock: PowerManager.WakeLock? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        activeInstance = this
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "wakeUpScreen" -> {
-                    wakeUpScreen()
-                    result.success(true)
+        methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "wakeUpScreen" -> {
+                        wakeUpScreen()
+                        result.success(true)
+                    }
+                    "showIncomingCall" -> {
+                        val callerName = call.argument<String>("callerName") ?: "Incoming Call"
+                        val callType = call.argument<String>("callType") ?: "audio"
+                        showIncomingCallNotification(callerName, callType)
+                        wakeUpScreen()
+                        result.success(true)
+                    }
+                    "dismissIncomingCall" -> {
+                        dismissIncomingCallNotification()
+                        releaseWakeLock()
+                        result.success(true)
+                    }
+                    "enableProximitySensor" -> {
+                        enableProximitySensor()
+                        result.success(true)
+                    }
+                    "disableProximitySensor" -> {
+                        disableProximitySensor()
+                        result.success(true)
+                    }
+                    "startForegroundService" -> {
+                        VoipForegroundService.startService(this@MainActivity)
+                        result.success(true)
+                    }
+                    "stopForegroundService" -> {
+                        VoipForegroundService.stopService(this@MainActivity)
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
                 }
-                "showIncomingCall" -> {
-                    val callerName = call.argument<String>("callerName") ?: "Incoming Call"
-                    val callType = call.argument<String>("callType") ?: "audio"
-                    showIncomingCallNotification(callerName, callType)
-                    wakeUpScreen()
-                    result.success(true)
+            }
+        }
+    }
+
+    private fun enableProximitySensor() {
+        runOnUiThread {
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                @Suppress("DEPRECATION")
+                if (powerManager.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+                    if (proximityWakeLock == null) {
+                        proximityWakeLock = powerManager.newWakeLock(
+                            PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                            "ConnectCall:ProximityLock"
+                        ).apply {
+                            setReferenceCounted(false)
+                        }
+                    }
+                    if (proximityWakeLock?.isHeld == false) {
+                        proximityWakeLock?.acquire()
+                    }
                 }
-                "dismissIncomingCall" -> {
-                    dismissIncomingCallNotification()
-                    releaseWakeLock()
-                    result.success(true)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun disableProximitySensor() {
+        runOnUiThread {
+            try {
+                if (proximityWakeLock?.isHeld == true) {
+                    proximityWakeLock?.release()
                 }
-                else -> result.notImplemented()
+                proximityWakeLock = null
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }
@@ -72,7 +159,7 @@ class MainActivity : FlutterActivity() {
                     "ConnectCall:VoipWakeLock"
                 ).apply {
                     setReferenceCounted(false)
-                    acquire(25000)
+                    acquire(30000)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -93,7 +180,7 @@ class MainActivity : FlutterActivity() {
 
     private fun showIncomingCallNotification(callerName: String, callType: String) {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val channelId = "connect_call_voip_v2"
+        val channelId = "connect_call_voip_v3"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
@@ -102,17 +189,19 @@ class MainActivity : FlutterActivity() {
                 .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
                 .build()
 
-            val channel = NotificationChannel(channelId, "Incoming Calls", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Incoming voice and video calls"
+            val channel = NotificationChannel(channelId, "Incoming Phone Calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Incoming voice and video phone calls"
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
                 setSound(ringtoneUri, audioAttributes)
                 lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                setBypassDnd(true)
             }
             notificationManager.createNotificationChannel(channel)
         }
 
-        val intent = Intent(this, MainActivity::class.java).apply {
+        // Tap notification intent
+        val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             action = Intent.ACTION_MAIN
             addCategory(Intent.CATEGORY_LAUNCHER)
@@ -125,7 +214,19 @@ class MainActivity : FlutterActivity() {
             PendingIntent.FLAG_UPDATE_CURRENT
         }
 
-        val pendingIntent = PendingIntent.getActivity(this, 1001, intent, flags)
+        val pendingFullScreenIntent = PendingIntent.getActivity(this, 1001, fullScreenIntent, flags)
+
+        // Action: Answer
+        val answerIntent = Intent(this, CallActionReceiver::class.java).apply {
+            action = CallActionReceiver.ACTION_ANSWER_CALL
+        }
+        val pendingAnswerIntent = PendingIntent.getBroadcast(this, 1002, answerIntent, flags)
+
+        // Action: Decline
+        val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
+            action = CallActionReceiver.ACTION_DECLINE_CALL
+        }
+        val pendingDeclineIntent = PendingIntent.getBroadcast(this, 1003, declineIntent, flags)
 
         val builder = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -135,8 +236,11 @@ class MainActivity : FlutterActivity() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setAutoCancel(true)
             .setOngoing(true)
-            .setFullScreenIntent(pendingIntent, true)
-            .setContentIntent(pendingIntent)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setFullScreenIntent(pendingFullScreenIntent, true)
+            .setContentIntent(pendingFullScreenIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", pendingDeclineIntent)
+            .addAction(android.R.drawable.ic_menu_call, "Answer", pendingAnswerIntent)
 
         notificationManager.notify(1001, builder.build())
     }
@@ -147,7 +251,11 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        disableProximitySensor()
         releaseWakeLock()
+        if (activeInstance == this) {
+            activeInstance = null
+        }
         super.onDestroy()
     }
 }

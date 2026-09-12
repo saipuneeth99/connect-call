@@ -32,11 +32,56 @@ class CallSignalingService {
     } catch (_) {}
   }
 
+  static Future<void> enableProximitySensor() async {
+    try {
+      await _voipChannel.invokeMethod('enableProximitySensor');
+      debugPrint('Proximity sensor enabled');
+    } catch (e) {
+      debugPrint('enableProximitySensor error: $e');
+    }
+  }
+
+  static Future<void> disableProximitySensor() async {
+    try {
+      await _voipChannel.invokeMethod('disableProximitySensor');
+      debugPrint('Proximity sensor disabled');
+    } catch (e) {
+      debugPrint('disableProximitySensor error: $e');
+    }
+  }
+
+  static Future<void> startForegroundService() async {
+    try {
+      await _voipChannel.invokeMethod('startForegroundService');
+    } catch (_) {}
+  }
+
+  static Future<void> stopForegroundService() async {
+    try {
+      await _voipChannel.invokeMethod('stopForegroundService');
+    } catch (_) {}
+  }
+
   static CallSignalingService? _instance;
   static CallSignalingService get instance =>
       _instance ??= CallSignalingService._();
 
-  CallSignalingService._();
+  CallSignalingService._() {
+    _setupMethodCallHandler();
+  }
+
+  void _setupMethodCallHandler() {
+    _voipChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onCallDeclinedFromNotification') {
+        debugPrint('Signaling: call declined from notification');
+        try {
+          if (Get.isRegistered<CallController>()) {
+            Get.find<CallController>().rejectCall();
+          }
+        } catch (_) {}
+      }
+    });
+  }
 
   RealtimeChannel? _myChannel;
   String? _currentUserId;
@@ -58,6 +103,7 @@ class CallSignalingService {
 
     await dispose();
     _currentUserId = userId;
+    startForegroundService();
 
     try {
       if (!Supabase.instance.isInitialized) return;
@@ -281,5 +327,7 @@ class CallSignalingService {
       _myChannel = null;
     }
     _currentUserId = null;
+    disableProximitySensor();
+    stopForegroundService();
   }
 }

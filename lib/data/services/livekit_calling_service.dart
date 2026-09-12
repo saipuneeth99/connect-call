@@ -86,11 +86,12 @@ class LiveKitCallingService implements CallingService {
 
       await _room!.connect(LiveKitConfig.url, token);
 
-      // Start audio playback engine and route audio to loudspeaker
+      // Start audio playback engine and route audio appropriately
       try {
         await _room!.startAudio();
-        await AudioManager.instance.setSpeakerOutputPreferred(true, force: true);
-        _isSpeakerOn = true;
+        final useSpeaker = type == CallType.video;
+        await AudioManager.instance.setSpeakerOutputPreferred(useSpeaker, force: true);
+        _isSpeakerOn = useSpeaker;
       } catch (e) {
         debugPrint('startCall audio setup error: $e');
       }
@@ -164,11 +165,12 @@ class LiveKitCallingService implements CallingService {
 
       await _room!.connect(LiveKitConfig.url, token);
 
-      // Start audio playback engine and route audio to loudspeaker
+      // Start audio playback engine and route audio appropriately
       try {
         await _room!.startAudio();
-        await AudioManager.instance.setSpeakerOutputPreferred(true, force: true);
-        _isSpeakerOn = true;
+        final useSpeaker = effectiveType == CallType.video;
+        await AudioManager.instance.setSpeakerOutputPreferred(useSpeaker, force: true);
+        _isSpeakerOn = useSpeaker;
       } catch (e) {
         debugPrint('acceptCall audio setup error: $e');
       }
@@ -487,7 +489,20 @@ class LiveKitCallingService implements CallingService {
       }
 
       if (hasSupabase) {
-        await Supabase.instance.client.from('calls').upsert({
+        int durationSeconds = 0;
+        if (call.endedAt != null) {
+          if (call.answeredAt != null) {
+            durationSeconds =
+                call.endedAt!.difference(call.answeredAt!).inSeconds;
+          } else if (call.status == CallStatus.connected ||
+              call.status == CallStatus.ended) {
+            durationSeconds =
+                call.endedAt!.difference(call.startedAt).inSeconds;
+          }
+        }
+        if (durationSeconds < 0) durationSeconds = 0;
+
+        final payload = {
           'id': call.id,
           'caller_id': call.caller.id,
           'caller_name': call.caller.name,
@@ -496,13 +511,17 @@ class LiveKitCallingService implements CallingService {
           'type': call.type.name,
           'status': call.status.name,
           'started_at': call.startedAt.toIso8601String(),
-          'answered_at': call.answeredAt?.toIso8601String(),
-          'ended_at': call.endedAt?.toIso8601String() ??
-              DateTime.now().toIso8601String(),
-          'duration_seconds': call.duration?.inSeconds ?? 0,
-        });
+          'ended_at': (call.endedAt ?? DateTime.now()).toIso8601String(),
+          'duration_seconds': durationSeconds,
+        };
+
+        await Supabase.instance.client.from('calls').upsert(payload);
+        debugPrint(
+            'Call logged to Supabase successfully: ${call.id} ($durationSeconds s, status: ${call.status.name})');
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Error logging call to Supabase: $e');
+    }
   }
 
   StreamController<CallStatus> _getOrCreateStatusController(String callId) {

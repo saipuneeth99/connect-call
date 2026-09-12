@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../core/errors/error_handler.dart';
@@ -17,14 +18,19 @@ class CallHistoryController extends GetxController {
   final RxString errorMessage = ''.obs;
   final RxBool showMissedOnly = false.obs;
 
+  RealtimeChannel? _callsChannel;
+  String _subscribedUserId = '';
+
   @override
   void onInit() {
     super.onInit();
     loadHistory();
   }
 
-  Future<void> loadHistory() async {
-    isLoading.value = true;
+  Future<void> loadHistory({bool silent = false}) async {
+    if (!silent) {
+      isLoading.value = true;
+    }
     errorMessage.value = '';
 
     try {
@@ -60,13 +66,50 @@ class CallHistoryController extends GetxController {
         userId = 'user_current';
       }
 
+      _subscribeToRealtimeCalls(userId);
+
       final calls = await _callRepository.getCallHistory(userId);
       allCalls.value = calls;
       _applyFilter();
     } catch (e) {
+      debugPrint('CallHistoryController.loadHistory error: $e');
       errorMessage.value = ErrorHandler.getUserMessage(e);
     } finally {
-      isLoading.value = false;
+      if (!silent) {
+        isLoading.value = false;
+      }
+    }
+  }
+
+  void _subscribeToRealtimeCalls(String userId) {
+    if (_callsChannel != null && _subscribedUserId == userId) return;
+    _subscribedUserId = userId;
+
+    try {
+      if (!Supabase.instance.isInitialized) return;
+      if (_callsChannel != null) {
+        Supabase.instance.client.removeChannel(_callsChannel!);
+        _callsChannel = null;
+      }
+
+      _callsChannel = Supabase.instance.client
+          .channel('public_calls_realtime_$userId')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'calls',
+            callback: (payload) {
+              debugPrint('Realtime call history update detected: ${payload.eventType}');
+              loadHistory(silent: true);
+              if (Get.isRegistered<HomeController>()) {
+                Get.find<HomeController>().loadData();
+              }
+            },
+          )
+        ..subscribe();
+      debugPrint('Subscribed to calls realtime for user: $userId');
+    } catch (e) {
+      debugPrint('Error subscribing to calls realtime: $e');
     }
   }
 
@@ -87,5 +130,16 @@ class CallHistoryController extends GetxController {
     } else {
       displayedCalls.value = List.from(allCalls);
     }
+  }
+
+  @override
+  void onClose() {
+    if (_callsChannel != null) {
+      try {
+        Supabase.instance.client.removeChannel(_callsChannel!);
+      } catch (_) {}
+      _callsChannel = null;
+    }
+    super.onClose();
   }
 }
