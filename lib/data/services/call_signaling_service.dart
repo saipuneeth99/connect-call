@@ -62,6 +62,12 @@ class CallSignalingService {
     } catch (_) {}
   }
 
+  static Future<void> requestIgnoreBatteryOptimizations() async {
+    try {
+      await _voipChannel.invokeMethod('requestIgnoreBatteryOptimizations');
+    } catch (_) {}
+  }
+
   static CallSignalingService? _instance;
   static CallSignalingService get instance =>
       _instance ??= CallSignalingService._();
@@ -84,6 +90,9 @@ class CallSignalingService {
   }
 
   RealtimeChannel? _myChannel;
+  RealtimeChannel? _dbCallsChannel;
+  Timer? _pendingCheckTimer;
+  String? _lastHandledCallId;
   String? _currentUserId;
   final Map<String, RealtimeChannel> _peerChannels = {};
 
@@ -103,27 +112,28 @@ class CallSignalingService {
 
     await dispose();
     _currentUserId = userId;
+
+    // Start background keep-alive service and ask for battery optimization exemption
     startForegroundService();
+    requestIgnoreBatteryOptimizations();
 
     try {
       if (!Supabase.instance.isInitialized) return;
 
+      // 1. Broadcast channel for instantaneous socket signaling
       final channelName = 'user_signaling_$userId';
       _myChannel = Supabase.instance.client.channel(
         channelName,
         opts: const RealtimeChannelConfig(self: false),
       );
 
-      // Listen for incoming call invites
       _myChannel!.onBroadcast(
         event: 'call_invite',
         callback: (payload) {
-          // Wrap in microtask to avoid modifying RealtimeClient.channels during iteration
           Future.microtask(() => _handleIncomingInvite(payload));
         },
       );
 
-      // Listen for call replies (accepted / rejected / busy)
       _myChannel!.onBroadcast(
         event: 'call_reply',
         callback: (rawPayload) {
@@ -136,7 +146,6 @@ class CallSignalingService {
         },
       );
 
-      // Listen for remote call termination
       _myChannel!.onBroadcast(
         event: 'call_ended',
         callback: (rawPayload) {
@@ -150,10 +159,82 @@ class CallSignalingService {
       );
 
       _myChannel!.subscribe();
-      debugPrint('CallSignalingService subscribed to $channelName');
+      debugPrint('CallSignalingService subscribed to broadcast $channelName');
+
+      // 2. Database Realtime listener for calls table changes
+      _dbCallsChannel = Supabase.instance.client
+          .channel('incoming_calls_db_$userId')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'calls',
+            callback: (payload) {
+              final record = payload.newRecord;
+              if (record.isNotEmpty &&
+                  record['receiver_id'] == userId &&
+                  record['status'] == 'ringing') {
+                debugPrint('Signaling: detected incoming call from Postgres change: ${record['id']}');
+                _handleIncomingCallFromRecord(record);
+              }
+            },
+          )
+        ..subscribe();
+      debugPrint('CallSignalingService subscribed to DB calls realtime');
+
+      // 3. Fast periodic check for calls inserted while phone was sleeping / transitioning
+      _pendingCheckTimer?.cancel();
+      _pendingCheckTimer = Timer.periodic(const Duration(milliseconds: 2500), (_) {
+        _checkPendingCalls();
+      });
+      _checkPendingCalls();
     } catch (e) {
       debugPrint('CallSignalingService init error: $e');
     }
+  }
+
+  Future<void> _checkPendingCalls() async {
+    if (_currentUserId == null || _currentUserId!.isEmpty) return;
+    try {
+      if (!Supabase.instance.isInitialized) return;
+      final threshold = DateTime.now()
+          .toUtc()
+          .subtract(const Duration(seconds: 40))
+          .toIso8601String();
+
+      final res = await Supabase.instance.client
+          .from('calls')
+          .select()
+          .eq('receiver_id', _currentUserId!)
+          .eq('status', 'ringing')
+          .gte('started_at', threshold)
+          .order('started_at', ascending: false)
+          .limit(1);
+
+      if (res.isNotEmpty) {
+        final callRecord = res.first;
+        _handleIncomingCallFromRecord(callRecord);
+      }
+    } catch (e) {
+      // debugPrint('Check pending calls error: $e');
+    }
+  }
+
+  void _handleIncomingCallFromRecord(Map<String, dynamic> record) {
+    final callId = record['id'] as String?;
+    if (callId == null || callId == _lastHandledCallId) return;
+
+    final callerId = record['caller_id'] as String?;
+    final callerName = (record['caller_name'] as String?) ?? 'Incoming Call';
+    final typeStr = record['type'] as String?;
+    if (callerId == null) return;
+
+    _handleIncomingInvite({
+      'callId': callId,
+      'callerId': callerId,
+      'callerName': callerName,
+      'callType': typeStr ?? 'audio',
+      'type': typeStr ?? 'audio',
+    });
   }
 
   Future<RealtimeChannel> _getOrCreatePeerChannel(String peerId) async {
@@ -163,11 +244,10 @@ class CallSignalingService {
     }
     final channel = Supabase.instance.client.channel(
       topic,
-      opts: const RealtimeChannelConfig(self: true),
+      opts: const RealtimeChannelConfig(self: false),
     );
     channel.subscribe();
     _peerChannels[topic] = channel;
-    // Allow phoenix socket connection to establish
     await Future.delayed(const Duration(milliseconds: 300));
     return channel;
   }
@@ -219,13 +299,13 @@ class CallSignalingService {
           'status': status,
         },
       );
-      debugPrint('Signaling: sent call_reply ($status) to $callerId');
+      debugPrint('Signaling: sent call_reply ($status) to user_signaling_$callerId');
     } catch (e) {
       debugPrint('CallSignalingService sendReply error: $e');
     }
   }
 
-  /// Sends call ended signal to remote participant
+  /// Sends call end event
   Future<void> sendEnd({
     required String otherUserId,
     required String callId,
@@ -261,6 +341,10 @@ class CallSignalingService {
         (payload['type'] == 'broadcast' ? null : payload['type'] as String?);
 
     if (callId == null || callerId == null) return;
+    if (_lastHandledCallId == callId && Get.currentRoute == AppRoutes.incomingCall) {
+      return;
+    }
+    _lastHandledCallId = callId;
 
     final type =
         typeStr == 'video' ? CallType.video : CallType.audio;
@@ -279,8 +363,9 @@ class CallSignalingService {
 
     if (callCtrl.callStatus.value == CallStatus.connected ||
         callCtrl.callStatus.value == CallStatus.calling ||
-        callCtrl.callStatus.value == CallStatus.ringing) {
-      // Line busy
+        (callCtrl.callStatus.value == CallStatus.ringing &&
+            callCtrl.remoteUser.value?.id != callerId)) {
+      // Line busy with another active call
       sendReply(callerId: callerId, callId: callId, status: 'busy');
       return;
     }
@@ -291,7 +376,7 @@ class CallSignalingService {
       callId: callId,
     );
 
-    // Trigger full screen notification and screen wake-up
+    // Trigger full screen notification, screen wake-up, and bring activity to front
     wakeAndNotifyIncoming(
       callerName: caller.name,
       callType: type.name,
@@ -312,6 +397,10 @@ class CallSignalingService {
   }
 
   Future<void> dispose() async {
+    _pendingCheckTimer?.cancel();
+    _pendingCheckTimer = null;
+    _lastHandledCallId = null;
+
     dismissVoipNotification();
     for (final ch in _peerChannels.values) {
       try {
@@ -326,6 +415,14 @@ class CallSignalingService {
       } catch (_) {}
       _myChannel = null;
     }
+
+    if (_dbCallsChannel != null) {
+      try {
+        await Supabase.instance.client.removeChannel(_dbCallsChannel!);
+      } catch (_) {}
+      _dbCallsChannel = null;
+    }
+
     _currentUserId = null;
     disableProximitySensor();
     stopForegroundService();

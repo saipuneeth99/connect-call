@@ -8,9 +8,11 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -56,6 +58,17 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+            keyguardManager?.requestDismissKeyguard(this, null)
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -87,11 +100,29 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
                     "startForegroundService" -> {
-                        // Safe no-op to eliminate ForegroundService SecurityException / crash
+                        VoipForegroundService.startService(this@MainActivity)
                         result.success(true)
                     }
                     "stopForegroundService" -> {
+                        VoipForegroundService.stopService(this@MainActivity)
                         result.success(true)
+                    }
+                    "requestIgnoreBatteryOptimizations" -> {
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                                if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                        data = Uri.parse("package:$packageName")
+                                    }
+                                    startActivity(intent)
+                                }
+                            }
+                            result.success(true)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            result.success(false)
+                        }
                     }
                     else -> result.notImplemented()
                 }
@@ -139,6 +170,17 @@ class MainActivity : FlutterActivity() {
     private fun wakeUpScreen() {
         runOnUiThread {
             try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                releaseWakeLock()
+                @Suppress("DEPRECATION")
+                wakeLock = powerManager.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                    "ConnectCall:VoipWakeLock"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire(30000)
+                }
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                     setShowWhenLocked(true)
                     setTurnScreenOn(true)
@@ -154,16 +196,15 @@ class MainActivity : FlutterActivity() {
                     )
                 }
 
-                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                releaseWakeLock()
-                @Suppress("DEPRECATION")
-                wakeLock = powerManager.newWakeLock(
-                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
-                    "ConnectCall:VoipWakeLock"
-                ).apply {
-                    setReferenceCounted(false)
-                    acquire(30000)
+                // Bring MainActivity to the front immediately so incoming caller screen displays
+                val launchIntent = Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    putExtra("route", "/incoming-call")
                 }
+                startActivity(launchIntent)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
